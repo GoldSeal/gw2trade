@@ -1,0 +1,81 @@
+[project]
+name = "gw2trade"
+version = "0.1.0"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+keywords = ["guild-wars-2", "gw2", "trading-post", "pyqt6", "sqlite", "alembic"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Games/Entertainment",
+]
+
+#[build-system]
+#requires = ["hatchling"]
+#build-backend = "hatchling.build"
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
+
+dependencies = [
+    "alembic>=1.20.0",
+    "pyqt6>=6.11.0",
+    "requests>=2.34.2",
+    "sqlalchemy>=2.1.1",
+]
+
+#[project.optional-dependencies]
+[dependency-groups]
+dev = [
+    "pyappdist",
+]
+
+[project.scripts]
+trade-tracker = "trade_tracker:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+
+[tool.pyappdist]
+name = "GW2 Trade Tracker"
+python = "3.13"
+
+[[tool.pyappdist.launchers]]
+name = "trade_tracker"
+entry = "trade_tracker:main"
+gui = true
+
+[[tool.pyappdist.targets]]
+name = "windows"
+platform = "windows-x86_64"
+format = "msi"
+manufacturer = "Universe Builders Inc."
+
+[[tool.pyappdist.targets]]
+name = "win32-image"
+platform = "windows-x86_64"
+format = "image"
+
+[[tool.pyappdist.targets]]
+name = "linux-image"
+platform = "linux-x86_64"
+format = "image"
+
+[tool.ruff]
+line-length = 80
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "PT"]
+ignore = []
+
+[tool.black]
+line-length = 80
+target-version = ["py313"]
