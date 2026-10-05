@@ -1,10 +1,10 @@
 import hashlib
 import logging
 import sys
+import typing
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import requests
 from db import SessionLocal, run_migrations
@@ -74,12 +74,14 @@ class CraftDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self.disciplines = disciplines
 
+    @typing.override
     def createEditor(self, parent, option, index):
         combo = QComboBox(parent)
         combo.setEditable(True)
         combo.addItems(self.disciplines)
         return combo
 
+    @typing.override
     def setEditorData(self, editor, index):
         text = index.data(Qt.ItemDataRole.DisplayRole) or "Unassigned"
         idx = editor.findText(text)
@@ -88,6 +90,7 @@ class CraftDelegate(QStyledItemDelegate):
         else:
             editor.setEditText(text)
 
+    @typing.override
     def setModelData(self, editor, model, index):
         val = editor.currentText().strip() or "Unassigned"
         model.setData(index, val, Qt.ItemDataRole.EditRole)
@@ -99,7 +102,7 @@ class CraftDelegate(QStyledItemDelegate):
 
 
 class AddUserDialog(QDialog):
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Add New User")
         self.resize(380, 140)
@@ -130,8 +133,8 @@ class AddUserDialog(QDialog):
 class AddWantedItemDialog(QDialog):
     def __init__(
         self,
-        craft_options: Optional[list[str]] = None,
-        parent: Optional[QWidget] = None,
+        craft_options: list[str] | None = None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Add Wanted Item")
@@ -189,7 +192,7 @@ class AddWantedItemDialog(QDialog):
             self.type_combo.currentText().lower(),
             self.qty_spin.value(),
             self.craft_combo.currentText().strip() or "Unassigned",
-            self.note_input.currentText().strip(),
+            self.note_input.text().strip(),
         )
 
 
@@ -204,7 +207,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("GW2 Commerce & Inventory Tracker")
         self.resize(1050, 650)
 
-        self.active_user_id: Optional[int] = None
+        self.active_user_id: int | None = None
         self.active_user_name: str = ""
 
         self.search_matches: list[int] = []
@@ -277,7 +280,9 @@ class MainWindow(QMainWindow):
         self.match_count_label.setStyleSheet("color: #888888; font-size: 11px;")
         top_bar.addWidget(self.match_count_label)
 
-        self.clear_search_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self.clear_search_shortcut = QShortcut(
+            QKeySequence(Qt.Key.Key_Escape), self
+        )
         self.clear_search_shortcut.activated.connect(self._clear_search)
 
         # Craft Partition Filter
@@ -414,9 +419,8 @@ class MainWindow(QMainWindow):
             if clean_query and clean_query == str_item_id:
                 exact_matches.append(row)
             elif (
-                (clean_query and clean_query in str_item_id)
-                or query in item_text
-            ):
+                clean_query and clean_query in str_item_id
+            ) or query in item_text:
                 partial_matches.append(row)
             self.search_matches = exact_matches + partial_matches
 
@@ -1072,7 +1076,7 @@ class MainWindow(QMainWindow):
         wanted_qty: int,
         in_trade_qty: int,
         note: str,
-        item_data: Optional[Item],
+        item_data: Item | None,
     ):
         """Renders all cells for a single item row."""
         item_name = item_data.name if item_data else f"Item #{item_id}"
