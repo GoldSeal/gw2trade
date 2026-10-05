@@ -11,7 +11,7 @@ from db import SessionLocal, run_migrations
 from models import CurrentTransaction, Item, User, WantedItem
 from PyQt6.QtCore import QSettings, QSize, Qt, QUrl
 from PyQt6.QtGui import (QAction, QCloseEvent, QColor, QFont, QIcon,
-                         QKeySequence, QPixmap)
+                         QKeySequence, QPixmap, QShortcut)
 from PyQt6.QtNetwork import (QNetworkAccessManager, QNetworkReply,
                              QNetworkRequest)
 from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog,
@@ -277,6 +277,9 @@ class MainWindow(QMainWindow):
         self.match_count_label.setStyleSheet("color: #888888; font-size: 11px;")
         top_bar.addWidget(self.match_count_label)
 
+        self.clear_search_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self.clear_search_shortcut.activated.connect(self._clear_search)
+
         # Craft Partition Filter
         top_bar.addWidget(QLabel("Partition:"))
         self.craft_filter_combo = QComboBox()
@@ -392,14 +395,30 @@ class MainWindow(QMainWindow):
             self.search_input.setStyleSheet("")
             return
 
+        clean_query = query.lstrip("#").removeprefix("id:").strip()
+        exact_matches = []
+        partial_matches = []
+
         for row in range(self.tracker_table.rowCount()):
             # Skip banner header rows (spanned over all columns)
             if self.tracker_table.columnSpan(row, 0) > 1:
                 continue
 
             item = self.tracker_table.item(row, 0)
-            if item and query in item.text().lower():
-                self.search_matches.append(row)
+            if not item:
+                continue
+
+            item_id = item.data(Qt.ItemDataRole.UserRole)
+            item_text = item.text().lower()
+            str_item_id = str(item_id) if item_id is not None else ""
+            if clean_query and clean_query == str_item_id:
+                exact_matches.append(row)
+            elif (
+                (clean_query and clean_query in str_item_id)
+                or query in item_text
+            ):
+                partial_matches.append(row)
+            self.search_matches = exact_matches + partial_matches
 
         if self.search_matches:
             self.search_input.setStyleSheet("")
@@ -435,6 +454,14 @@ class MainWindow(QMainWindow):
         self.match_count_label.setText(
             f"{match_idx + 1}/{len(self.search_matches)}"
         )
+
+    def _clear_search(self):
+        """Clears search text, match markers, and table selection on Esc."""
+        if self.search_input.text():
+            self.search_input.clear()
+        self.tracker_table.clearSelection()
+        self.search_input.clearFocus()
+        self.tracker_table.setFocus()
 
     # ========================================================================
     # User Management
