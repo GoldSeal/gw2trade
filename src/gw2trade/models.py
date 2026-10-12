@@ -108,6 +108,7 @@ class WantedItem(Base):
     note: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, default=""
     )
+    re_listed: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="wanted_items")
 

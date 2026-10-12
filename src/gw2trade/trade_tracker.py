@@ -6,8 +6,12 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+import crud
 import requests
+from const import CRAFTING_DISCIPLINES
 from db import SessionLocal, run_migrations
+from delegates import CraftDelegate, SpinBoxDelegate
+from dialogs import AddUserDialog, AddWantedItemDialog
 from models import CurrentTransaction, Item, User, WantedItem
 from PyQt6.QtCore import QSettings, QSize, Qt, QUrl
 from PyQt6.QtGui import (QAction, QCloseEvent, QColor, QFont, QIcon,
@@ -25,18 +29,6 @@ from sqlalchemy import func, select
 GW2_BASE_URL = "https://api.guildwars2.com/v2"
 CACHE_DIR = Path("icon_cache")
 CACHE_DIR.mkdir(exist_ok=True)
-CRAFTING_DISCIPLINES = [
-    "Armorsmith",
-    "Artificer",
-    "Chef",
-    "Huntsman",
-    "Jeweler",
-    "Leatherworker",
-    "Scribe",
-    "Tailor",
-    "Weaponsmith",
-    "Unassigned",
-]
 RARITY_COLORS: dict[str, QColor] = {
     "Junk": QColor("#AAAAAA"),  # Grey
     "Basic": QColor("#CCCCCC"),  # Light Grey
@@ -65,135 +57,7 @@ class TrackerSnapshot:
     grouped_items: dict[str, list[tuple[int, str]]]
     item_metadata: dict[int, Item]
     note_map: dict[tuple[int, str], str]
-
-
-class CraftDelegate(QStyledItemDelegate):
-    """In-table combobox editor for manually selecting or typing a craft."""
-
-    def __init__(self, disciplines: list[str], parent=None):
-        super().__init__(parent)
-        self.disciplines = disciplines
-
-    @typing.override
-    def createEditor(self, parent, option, index):
-        combo = QComboBox(parent)
-        combo.setEditable(True)
-        combo.addItems(self.disciplines)
-        return combo
-
-    @typing.override
-    def setEditorData(self, editor, index):
-        text = index.data(Qt.ItemDataRole.DisplayRole) or "Unassigned"
-        idx = editor.findText(text)
-        if idx >= 0:
-            editor.setCurrentIndex(idx)
-        else:
-            editor.setEditText(text)
-
-    @typing.override
-    def setModelData(self, editor, model, index):
-        val = editor.currentText().strip() or "Unassigned"
-        model.setData(index, val, Qt.ItemDataRole.EditRole)
-
-
-# ============================================================================
-# Dialogs
-# ============================================================================
-
-
-class AddUserDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setWindowTitle("Add New User")
-        self.resize(380, 140)
-
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
-
-        self.name_input = QLineEdit()
-        self.api_key_input = QLineEdit()
-        self.api_key_input.setPlaceholderText("XXXXXXXX-XXXX-XXXX-XXXX-...")
-
-        form.addRow("Username:", self.name_input)
-        form.addRow("API Key:", self.api_key_input)
-        layout.addLayout(form)
-
-        self.buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        self.buttons.accepted.connect(self.accept)
-        self.buttons.rejected.connect(self.reject)
-        layout.addWidget(self.buttons)
-
-    def get_data(self) -> tuple[str, str]:
-        return self.name_input.text().strip(), self.api_key_input.text().strip()
-
-
-class AddWantedItemDialog(QDialog):
-    def __init__(
-        self,
-        craft_options: list[str] | None = None,
-        parent: QWidget | None = None,
-    ):
-        super().__init__(parent)
-        self.setWindowTitle("Add Wanted Item")
-        self.resize(320, 160)
-
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
-
-        # Item ID (GW2 IDs can reach up to ~150,000+)
-        self.item_id_spin = QSpinBox()
-        self.item_id_spin.setRange(1, 999_999)
-        self.item_id_spin.setValue(1)
-
-        # Listing Type dropdown
-        self.type_combo = QComboBox()
-        self.type_combo.addItems(["SELL", "BUY"])
-
-        # Target Quantity
-        self.qty_spin = QSpinBox()
-        self.qty_spin.setRange(0, 1_000_000)
-        self.qty_spin.setValue(1)
-
-        self.craft_combo = QComboBox()
-        self.craft_combo.setEditable(True)
-        crafts = list(CRAFTING_DISCIPLINES)
-        if craft_options:
-            for c in craft_options:
-                if c not in crafts:
-                    crafts.append(c)
-        self.craft_combo.addItems(crafts)
-        self.craft_combo.setCurrentText("Unassigned")
-
-        self.note_input = QLineEdit()
-        self.note_input.setPlaceholderText("Optional note / character name...")
-
-        form.addRow("Item ID:", self.item_id_spin)
-        form.addRow("Listing Type:", self.type_combo)
-        form.addRow("Craft Partition:", self.craft_combo)
-        form.addRow("Wanted Quantity:", self.qty_spin)
-        form.addRow("Note:", self.note_input)
-        layout.addLayout(form)
-
-        # OK / Cancel buttons
-        self.buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        self.buttons.accepted.connect(self.accept)
-        self.buttons.rejected.connect(self.reject)
-        layout.addWidget(self.buttons)
-
-    def get_data(self) -> tuple[int, str, int, str, str]:
-        return (
-            self.item_id_spin.value(),
-            self.type_combo.currentText().lower(),
-            self.qty_spin.value(),
-            self.craft_combo.currentText().strip() or "Unassigned",
-            self.note_input.text().strip(),
-        )
+    re_list_map: dict[tuple[int, str], int]
 
 
 # ============================================================================
@@ -306,7 +170,7 @@ class MainWindow(QMainWindow):
 
         # Comparison Table
         self.tracker_table = QTableWidget()
-        self.tracker_table.setColumnCount(8)
+        self.tracker_table.setColumnCount(9)
         self.tracker_table.setHorizontalHeaderLabels(
             [
                 "Item",
@@ -315,6 +179,7 @@ class MainWindow(QMainWindow):
                 "Needed",
                 "Wanted",
                 "In Trade",
+                "Re Listed",
                 "",
                 "Note",
             ]
@@ -326,10 +191,14 @@ class MainWindow(QMainWindow):
         self.tracker_table.horizontalHeader().setSectionResizeMode(
             7, QHeaderView.ResizeMode.Interactive
         )
-        self.tracker_table.setColumnWidth(6, 40)
+        self.tracker_table.setColumnWidth(7, 40)  # check box
 
         self.tracker_table.setItemDelegateForColumn(
             1, CraftDelegate(CRAFTING_DISCIPLINES, self.tracker_table)
+        )
+        self.tracker_table.setItemDelegateForColumn(
+            6,
+            SpinBoxDelegate(min_val=0, max_val=250, parent=self.tracker_table),
         )
         self.tracker_table.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
@@ -472,8 +341,7 @@ class MainWindow(QMainWindow):
     # ========================================================================
 
     def _bootstrap_user(self):
-        with SessionLocal() as session:
-            first_user = session.scalars(select(User).order_by(User.id)).first()
+        first_user = crud.user.get_first_user()
 
         if first_user:
             self.set_active_user(first_user.id, first_user.name)
@@ -510,10 +378,8 @@ class MainWindow(QMainWindow):
                 return False
 
             with SessionLocal() as session:
-                new_user = User(name=name, api_key=api_key)
-                session.add(new_user)
                 try:
-                    session.commit()
+                    new_user = crud.user.create_user(name=name, api_key=api_key)
                     self.set_active_user(new_user.id, new_user.name)
                     return True
                 except Exception as exc:
@@ -524,9 +390,7 @@ class MainWindow(QMainWindow):
         return False
 
     def switch_user(self):
-        with SessionLocal() as session:
-            users = session.scalars(select(User).order_by(User.id)).all()
-
+        users = crud.user.get_all_users()
         if not users:
             QMessageBox.information(self, "No Users", "No users found.")
             return
@@ -561,40 +425,21 @@ class MainWindow(QMainWindow):
         if not item_ids:
             return
 
-        with SessionLocal() as session:
-            existing = set(
-                session.scalars(
-                    select(Item.id).where(Item.id.in_(item_ids))
-                ).all()
-            )
-            missing = list(item_ids - existing)
+        missing = list(crud.item.get_missing_item_ids(item_ids))
 
-            # Bulk request in batches of up to 200 items
-            batch_size = 200
-            for i in range(0, len(missing), batch_size):
-                batch = missing[i : i + batch_size]
-                ids_str = ",".join(str(x) for x in batch)
-                try:
-                    resp = requests.get(
-                        f"{GW2_BASE_URL}/items?ids={ids_str}", timeout=10
-                    )
-                    if resp.status_code == 200:
-                        for raw in resp.json():
-                            item = Item(
-                                id=raw["id"],
-                                name=raw.get("name", "Unknown Item"),
-                                icon=raw.get("icon"),
-                                chat_link=raw.get("chat_link"),
-                                description=raw.get("description"),
-                                type=raw.get("type"),
-                                rarity=raw.get("rarity"),
-                                level=raw.get("level", 0),
-                                vendor_value=raw.get("vendor_value", 0),
-                            )
-                            session.add(item)
-                        session.commit()
-                except requests.RequestException:
-                    pass
+        # Bulk request in batches of up to 200 items
+        batch_size = 200
+        for i in range(0, len(missing), batch_size):
+            batch = missing[i : i + batch_size]
+            ids_str = ",".join(str(x) for x in batch)
+            try:
+                resp = requests.get(
+                    f"{GW2_BASE_URL}/items?ids={ids_str}", timeout=10
+                )
+                if resp.status_code == 200:
+                    crud.item.create_items_from_api(resp.json())
+            except requests.RequestException:
+                pass
 
     def _get_disk_cache_path(self, url: str) -> Path:
         """Generates a stable local filename using MD5 hash of the URL."""
@@ -663,13 +508,11 @@ class MainWindow(QMainWindow):
         if not self.active_user_id:
             return
 
-        with SessionLocal() as session:
-            user = session.get(User, self.active_user_id)
-            if not user:
-                return
-            api_key = user.api_key
+        user = crud.user.get_user_by_id(self.active_user_id)
+        if not user:
+            return
 
-        headers = {"Authorization": f"Bearer {api_key}"}
+        headers = {"Authorization": f"Bearer {user.api_key}"}
         endpoints = {
             "buy": f"{GW2_BASE_URL}/commerce/transactions/current/buys",
             "sell": f"{GW2_BASE_URL}/commerce/transactions/current/sells",
@@ -703,23 +546,9 @@ class MainWindow(QMainWindow):
             )
             return
 
-        with SessionLocal() as session:
-            session.query(CurrentTransaction).filter(
-                CurrentTransaction.user_id == self.active_user_id
-            ).delete()
-
-            for tx in fetched_transactions:
-                record = CurrentTransaction(
-                    id=tx["id"],
-                    user_id=self.active_user_id,
-                    item_id=tx["item_id"],
-                    price=tx["price"],
-                    quantity=tx["quantity"],
-                    created=tx["created"],
-                    listing_type=tx["listing_type"],
-                )
-                session.add(record)
-            session.commit()
+        crud.transaction.replace_current_transactions(
+            self.active_user_id, fetched_transactions
+        )
 
         # Pre-fetch any newly discovered items
         referenced_ids = {tx["item_id"] for tx in fetched_transactions}
@@ -733,44 +562,6 @@ class MainWindow(QMainWindow):
         self.refresh_tracker_table()
 
     # ========================================================================
-    def _get_item_craft(self, session, item_id: int) -> str:
-        craft = session.scalar(
-            select(WantedItem.craft).where(
-                WantedItem.user_id == self.active_user_id,
-                WantedItem.item_id == item_id,
-            )
-        )
-        return craft or "Unassigned"
-
-    def _set_item_craft(self, item_id: int, listing_type: str, craft: str):
-        if not self.active_user_id:
-            return
-
-        with SessionLocal() as session:
-            targets = session.scalars(
-                select(WantedItem).where(
-                    WantedItem.user_id == self.active_user_id,
-                    WantedItem.item_id == item_id,
-                )
-            ).all()
-
-            if targets:
-                for t in targets:
-                    t.craft = craft
-            else:
-                session.add(
-                    WantedItem(
-                        user_id=self.active_user_id,
-                        item_id=item_id,
-                        target_quantity=0,
-                        listing_type=listing_type,
-                        craft=craft,
-                    )
-                )
-            session.commit()
-
-        self.refresh_tracker_table()
-
     def _prompt_custom_craft(self, item_id: int, listing_type: str):
         text, ok = QInputDialog.getText(
             self,
@@ -778,25 +569,10 @@ class MainWindow(QMainWindow):
             "Enter craft or character partition name:",
         )
         if ok and text.strip():
-            self._set_item_craft(item_id, listing_type, text.strip())
-
-    def _delete_target_item(self, item_id: int, listing_type: str):
-        if not self.active_user_id:
-            return
-
-        with SessionLocal() as session:
-            target = session.scalar(
-                select(WantedItem).where(
-                    WantedItem.user_id == self.active_user_id,
-                    WantedItem.item_id == item_id,
-                    WantedItem.listing_type == listing_type,
-                )
+            crud.wanted_item.set_item_craft(
+                self.active_user_id, item_id, listing_type, text.strip()
             )
-            if target:
-                session.delete(target)
-                session.commit()
-
-        self.refresh_tracker_table()
+            self.refresh_tracker_table()
 
     def _on_context_menu(self, pos):
         row = self.tracker_table.rowAt(pos.y())
@@ -818,8 +594,11 @@ class MainWindow(QMainWindow):
         for craft in CRAFTING_DISCIPLINES:
             action = craft_menu.addAction(craft)
             action.triggered.connect(
-                lambda _, d=craft: self._set_item_craft(
-                    item_id, listing_type, d
+                lambda _, d=craft: (
+                    crud.wanted_item.set_item_craft(
+                        self.active_user_id, item_id, listing_type, d
+                    ),
+                    self.refresh_tracker_table(),
                 )
             )
 
@@ -831,7 +610,12 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         delete_action = menu.addAction("Remove Target Item")
         delete_action.triggered.connect(
-            lambda _: self._delete_target_item(item_id, listing_type)
+            lambda _: (
+                crud.wanted_item.delete_target_item(
+                    self.active_user_id, item_id, listing_type
+                ),
+                self.refresh_tracker_table(),
+            )
         )
 
         menu.exec(self.tracker_table.viewport().mapToGlobal(pos))
@@ -850,39 +634,14 @@ class MainWindow(QMainWindow):
 
         item_id, tx_type, target_qty, craft, note = dialog.get_data()
 
-        with SessionLocal() as session:
-            existing = session.scalar(
-                select(WantedItem).where(
-                    WantedItem.user_id == self.active_user_id,
-                    WantedItem.item_id == item_id,
-                    WantedItem.listing_type == tx_type,
-                )
-            )
-            if existing:
-                existing.target_quantity = target_qty
-                existing.craft = craft
-                existing.note = note
-            else:
-                session.add(
-                    WantedItem(
-                        user_id=self.active_user_id,
-                        item_id=item_id,
-                        target_quantity=target_qty,
-                        listing_type=tx_type,
-                        craft=craft,
-                        note=note,
-                    )
-                )
-            # Keep other listing types for this item aligned to the same craft
-            other_targets = session.scalars(
-                select(WantedItem).where(
-                    WantedItem.user_id == self.active_user_id,
-                    WantedItem.item_id == item_id,
-                )
-            ).all()
-            for target in other_targets:
-                target.craft = craft
-            session.commit()
+        crud.wanted_item.upsert_target_item(
+            user_id=self.active_user_id,
+            item_id=item_id,
+            listing_type=tx_type,
+            target_quantity=target_qty,
+            craft=craft,
+            note=note,
+        )
 
         self.ensure_items_cached({item_id})
         self.refresh_tracker_table()
@@ -919,8 +678,11 @@ class MainWindow(QMainWindow):
                     in_trade_qty=snapshot.in_trade_map.get(
                         (item_id, listing_type), 0
                     ),
-                    item_data=snapshot.item_metadata.get(item_id),
                     note=snapshot.note_map.get((item_id, listing_type), ""),
+                    re_listed=snapshot.re_list_map.get(
+                        (item_id, listing_type), 0
+                    ),
+                    item_data=snapshot.item_metadata.get(item_id),
                 )
                 current_row += 1
 
@@ -928,64 +690,38 @@ class MainWindow(QMainWindow):
 
     def _load_tracker_data(self) -> TrackerSnapshot:
         """Queries database for active trades, targets, and item metadata."""
-        with SessionLocal() as session:
-            trade_rows = session.execute(
-                select(
-                    CurrentTransaction.item_id,
-                    CurrentTransaction.listing_type,
-                    func.sum(CurrentTransaction.quantity).label(
-                        "total_in_trade"
-                    ),
-                )
-                .where(CurrentTransaction.user_id == self.active_user_id)
-                .group_by(
-                    CurrentTransaction.item_id,
-                    CurrentTransaction.listing_type,
-                )
-            ).all()
+        in_trade_map = crud.transaction.get_in_trade_totals(self.active_user_id)
+        targets = crud.wanted_item.get_wanted_items(self.active_user_id)
 
-            in_trade_map = {
-                (row.item_id, row.listing_type): row.total_in_trade
-                for row in trade_rows
-            }
+        all_keys = set(in_trade_map.keys()) | {
+            (t.item_id, t.listing_type) for t in targets
+        }
+        wanted_map = {
+            (t.item_id, t.listing_type): t.target_quantity for t in targets
+        }
 
-            targets = session.scalars(
-                select(WantedItem).where(
-                    WantedItem.user_id == self.active_user_id
-                )
-            ).all()
+        craft_map: dict[tuple[int, str], str] = {}
+        craft_by_item: dict[int, str] = {}
+        for t in targets:
+            c_val = t.craft or "Unassigned"
+            craft_map[(t.item_id, t.listing_type)] = c_val
+            if t.item_id not in craft_by_item or c_val != "Unassigned":
+                craft_by_item[t.item_id] = c_val
 
-            all_keys = set(in_trade_map.keys()) | {
-                (t.item_id, t.listing_type) for t in targets
-            }
-            wanted_map = {
-                (t.item_id, t.listing_type): t.target_quantity for t in targets
-            }
+        all_item_ids = {k[0] for k in all_keys}
+        self.ensure_items_cached(all_item_ids)
+        item_metadata = crud.item.get_items_by_ids(all_item_ids)
 
-            craft_map: dict[tuple[int, str], str] = {}
-            craft_by_item: dict[int, str] = {}
-            for t in targets:
-                c_val = t.craft or "Unassigned"
-                craft_map[(t.item_id, t.listing_type)] = c_val
-                if t.item_id not in craft_by_item or c_val != "Unassigned":
-                    craft_by_item[t.item_id] = c_val
+        grouped_items: dict[str, list[tuple[int, str]]] = defaultdict(list)
+        for key in all_keys:
+            c = craft_map.get(key, craft_by_item.get(key[0], "Unassigned"))
+            grouped_items[c].append(key)
 
-            all_item_ids = {k[0] for k in all_keys}
-            self.ensure_items_cached(all_item_ids)
+        note_map = {(t.item_id, t.listing_type): t.note or "" for t in targets}
 
-            db_items = session.scalars(
-                select(Item).where(Item.id.in_(all_item_ids))
-            ).all()
-            item_metadata = {item.id: item for item in db_items}
-
-            grouped_items: dict[str, list[tuple[int, str]]] = defaultdict(list)
-            for key in all_keys:
-                c = craft_map.get(key, craft_by_item.get(key[0], "Unassigned"))
-                grouped_items[c].append(key)
-
-            note_map = {
-                (t.item_id, t.listing_type): t.note or "" for t in targets
-            }
+        re_list_map = {
+            (t.item_id, t.listing_type): t.re_listed or 0 for t in targets
+        }
 
         return TrackerSnapshot(
             in_trade_map=in_trade_map,
@@ -993,6 +729,7 @@ class MainWindow(QMainWindow):
             grouped_items=grouped_items,
             item_metadata=item_metadata,
             note_map=note_map,
+            re_list_map=re_list_map,
         )
 
     def _sync_craft_filter(
@@ -1076,6 +813,7 @@ class MainWindow(QMainWindow):
         wanted_qty: int,
         in_trade_qty: int,
         note: str,
+        re_listed: int,
         item_data: Item | None,
     ):
         """Renders all cells for a single item row."""
@@ -1127,7 +865,14 @@ class MainWindow(QMainWindow):
         trade_item.setFlags(trade_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self.tracker_table.setItem(row, 5, trade_item)
 
-        # Col 6: Checkbox
+        # Col 6: Re Listed
+        re_listed_item = QTableWidgetItem(str(re_listed))
+        re_listed_item.setData(
+            Qt.ItemDataRole.UserRole, (item_id, listing_type)
+        )
+        self.tracker_table.setItem(row, 6, re_listed_item)
+
+        # Col 7: Checkbox
         check_item = QTableWidgetItem()
         check_item.setFlags(
             Qt.ItemFlag.ItemIsUserCheckable
@@ -1138,11 +883,12 @@ class MainWindow(QMainWindow):
         check_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         check_item.setData(Qt.ItemDataRole.UserRole, (item_id, listing_type))
         check_item.setData(Qt.ItemDataRole.UserRole + 1, (rarity, diff))
-        self.tracker_table.setItem(row, 6, check_item)
+        self.tracker_table.setItem(row, 7, check_item)
 
+        # Col 8: note
         note_widget = QTableWidgetItem(note)
         note_widget.setData(Qt.ItemDataRole.UserRole, (item_id, listing_type))
-        self.tracker_table.setItem(row, 7, note_widget)
+        self.tracker_table.setItem(row, 8, note_widget)
 
     def on_cell_changed(self, row: int, column: int):
         if not self.active_user_id:
@@ -1159,17 +905,23 @@ class MainWindow(QMainWindow):
 
         if column == 1:
             new_craft = item.text().strip() or "Unassigned"
-            self._set_item_craft(item_id, listing_type, new_craft)
+            crud.wanted_item.set_item_craft(
+                self.active_user_id, item_id, listing_type, new_craft
+            )
+            self.refresh_tracker_table()
             return
 
-        if column == 6:
+        if column == 7:
             self.on_check_toggle(item, row)
             return
 
         if column == 4:
             self.on_new_wanted_quantity(item, item_id, listing_type)
 
-        if column == 7:
+        if column == 6:
+            self.on_re_list_edited(item, item_id, listing_type)
+
+        if column == 8:
             self.on_note_edited(item, item_id, listing_type)
 
         self.refresh_tracker_table()
@@ -1186,53 +938,21 @@ class MainWindow(QMainWindow):
             self.refresh_tracker_table()
             return
 
-        with SessionLocal() as session:
-            target = session.scalar(
-                select(WantedItem).where(
-                    WantedItem.user_id == self.active_user_id,
-                    WantedItem.item_id == item_id,
-                    WantedItem.listing_type == listing_type,
-                )
-            )
-            if target:
-                target.target_quantity = new_qty
-            else:
-                session.add(
-                    WantedItem(
-                        user_id=self.active_user_id,
-                        item_id=item_id,
-                        target_quantity=new_qty,
-                        listing_type=listing_type,
-                        note="",
-                    )
-                )
-            session.commit()
+        crud.wanted_item.set_target_quantity(
+            self.active_user_id, item_id, listing_type, new_qty
+        )
 
     def on_note_edited(self, item, item_id: int, listing_type: str):
         new_note = item.text().strip()
-        with SessionLocal() as session:
-            target = session.scalar(
-                select(WantedItem).where(
-                    WantedItem.user_id == self.active_user_id,
-                    WantedItem.item_id == item_id,
-                    WantedItem.listing_type == listing_type,
-                )
-            )
-            if target:
-                target.note = new_note
-            else:
-                existing_craft = self._get_item_craft(session, item_id)
-                session.add(
-                    WantedItem(
-                        user_id=self.active_user_id,
-                        item_id=item_id,
-                        target_quantity=0,
-                        listing_type=listing_type,
-                        craft=existing_craft,
-                        note=new_note,
-                    )
-                )
-            session.commit()
+        crud.wanted_item.set_target_note(
+            self.active_user_id, item_id, listing_type, new_note
+        )
+
+    def on_re_list_edited(self, item, item_id: int, listing_type: str):
+        re_listed = int(item.text().strip())
+        crud.wanted_item.set_relisted(
+            self.active_user_id, item_id, listing_type, re_listed
+        )
 
     def on_check_toggle(self, item, row: int):
         is_checked = item.checkState() == Qt.CheckState.Checked
