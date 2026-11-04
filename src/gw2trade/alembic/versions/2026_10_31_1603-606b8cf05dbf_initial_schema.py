@@ -1,8 +1,8 @@
 """initial schema
 
-Revision ID: b14ecf23c1b2
+Revision ID: 606b8cf05dbf
 Revises:
-Create Date: 2026-09-27 12:32:52.986722
+Create Date: 2026-10-31 16:03:14.414426
 
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision: str = "b14ecf23c1b2"
+revision: str = "606b8cf05dbf"
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -50,13 +50,45 @@ def upgrade() -> None:
         sa.UniqueConstraint("api_key"),
     )
     op.create_table(
+        "characters",
+        sa.Column("name", sa.String(length=30), nullable=False),
+        sa.Column("user_id", sa.Integer(), nullable=False),
+        sa.Column("race", sa.String(length=10), nullable=False),
+        sa.Column("gender", sa.String(length=10), nullable=False),
+        sa.Column("flags", sa.JSON(), nullable=False),
+        sa.Column("profession", sa.String(length=15), nullable=False),
+        sa.Column("level", sa.Integer(), nullable=False),
+        sa.Column("guild", sa.String(length=40), nullable=True),
+        sa.Column("age", sa.Integer(), nullable=False),
+        sa.Column("created", sa.String(length=25), nullable=False),
+        sa.Column("deaths", sa.Integer(), nullable=False),
+        sa.Column("crafting", sa.JSON(), nullable=False),
+        sa.Column("backstory", sa.JSON(), nullable=False),
+        sa.Column("wvw_abilities", sa.JSON(), nullable=False),
+        sa.Column("equipment", sa.JSON(), nullable=False),
+        sa.Column("recipes", sa.JSON(), nullable=False),
+        sa.Column("training", sa.JSON(), nullable=False),
+        sa.Column("bags", sa.JSON(), nullable=False),
+        sa.Column("equipment_pvp", sa.JSON(), nullable=False),
+        sa.Column("specializations", sa.JSON(), nullable=False),
+        sa.Column("skills", sa.JSON(), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["user_id"],
+            ["users.id"],
+        ),
+        sa.PrimaryKeyConstraint("name"),
+    )
+    op.create_index(
+        op.f("ix_characters_user_id"), "characters", ["user_id"], unique=False
+    )
+    op.create_table(
         "current_transactions",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("item_id", sa.Integer(), nullable=False),
         sa.Column("price", sa.Integer(), nullable=False),
         sa.Column("quantity", sa.Integer(), nullable=False),
-        sa.Column("created", sa.String(length=50), nullable=False),
+        sa.Column("created", sa.DateTime(), nullable=False),
         sa.Column("listing_type", sa.String(length=10), nullable=False),
         sa.ForeignKeyConstraint(
             ["user_id"],
@@ -72,13 +104,13 @@ def upgrade() -> None:
     )
     op.create_table(
         "historic_transactions",
-        sa.Column("purchased", sa.String(length=50), nullable=False),
+        sa.Column("purchased", sa.DateTime(), nullable=False),
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("item_id", sa.Integer(), nullable=False),
         sa.Column("price", sa.Integer(), nullable=False),
         sa.Column("quantity", sa.Integer(), nullable=False),
-        sa.Column("created", sa.String(length=50), nullable=False),
+        sa.Column("created", sa.DateTime(), nullable=False),
         sa.Column("listing_type", sa.String(length=10), nullable=False),
         sa.ForeignKeyConstraint(
             ["user_id"],
@@ -93,12 +125,45 @@ def upgrade() -> None:
         unique=False,
     )
     op.create_table(
+        "recipes",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("user_id", sa.Integer(), nullable=False),
+        sa.Column("type", sa.String(length=30), nullable=False),
+        sa.Column("output_item_id", sa.Integer(), nullable=False),
+        sa.Column("output_item_count", sa.Integer(), nullable=False),
+        sa.Column("time_to_craft_ms", sa.Integer(), nullable=False),
+        sa.Column("disciplines", sa.JSON(), nullable=False),
+        sa.Column("min_rating", sa.Integer(), nullable=False),
+        sa.Column("flags", sa.JSON(), nullable=False),
+        sa.Column("ingredients", sa.JSON(), nullable=False),
+        sa.Column("guild_ingredients", sa.JSON(), nullable=True),
+        sa.Column("output_upgrade_id", sa.Integer(), nullable=True),
+        sa.Column("chat_link", sa.String(length=50), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["user_id"],
+            ["users.id"],
+        ),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(
+        op.f("ix_recipes_user_id"), "recipes", ["user_id"], unique=False
+    )
+    op.create_table(
         "wanted_items",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("item_id", sa.Integer(), nullable=False),
         sa.Column("target_quantity", sa.Integer(), nullable=False),
         sa.Column("listing_type", sa.String(length=10), nullable=False),
+        sa.Column(
+            "craft",
+            sa.String(length=15),
+            server_default="Unassigned",
+            nullable=False,
+        ),
+        sa.Column("note", sa.String(length=255), nullable=True),
+        sa.Column("sold", sa.Integer(), nullable=True),
+        sa.Column("re_listed", sa.Integer(), nullable=True),
         sa.ForeignKeyConstraint(
             ["user_id"],
             ["users.id"],
@@ -119,6 +184,8 @@ def downgrade() -> None:
     # ### commands auto generated by Alembic - please adjust! ###
     op.drop_index(op.f("ix_wanted_items_user_id"), table_name="wanted_items")
     op.drop_table("wanted_items")
+    op.drop_index(op.f("ix_recipes_user_id"), table_name="recipes")
+    op.drop_table("recipes")
     op.drop_index(
         op.f("ix_historic_transactions_item_id"),
         table_name="historic_transactions",
@@ -129,6 +196,8 @@ def downgrade() -> None:
         table_name="current_transactions",
     )
     op.drop_table("current_transactions")
+    op.drop_index(op.f("ix_characters_user_id"), table_name="characters")
+    op.drop_table("characters")
     op.drop_table("users")
     op.drop_table("items")
     # ### end Alembic commands ###

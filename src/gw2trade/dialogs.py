@@ -1,6 +1,8 @@
 from const import CRAFTING_DISCIPLINES
+from PyQt6.QtCore import QDate
 from PyQt6.QtWidgets import (
     QComboBox,
+    QDateEdit,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -56,7 +58,7 @@ class AddWantedItemDialog(QDialog):
         # Item ID (GW2 IDs can reach up to ~150,000+)
         self.item_id_spin = QSpinBox()
         self.item_id_spin.setRange(1, 999_999)
-        self.item_id_spin.setValue(1)
+        # self.item_id_spin.setValue(1)
 
         # Listing Type dropdown
         self.type_combo = QComboBox()
@@ -104,3 +106,48 @@ class AddWantedItemDialog(QDialog):
             self.craft_combo.currentText().strip() or "Unassigned",
             self.note_input.text().strip(),
         )
+
+
+class SettingsDialog(QDialog):
+    def __init__(
+        self,
+        cutoff_date: QDate,
+        theme: str,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.resize(360, 150)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.cutoff_edit = QDateEdit()
+        self.cutoff_edit.setCalendarPopup(True)
+        self.cutoff_edit.setDisplayFormat("yyyy-MM-dd")
+        self.cutoff_edit.setDate(cutoff_date)
+        self.cutoff_edit.setToolTip(
+            "Only historic sales on or after this date count toward Sold."
+        )
+
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["Dark", "Light"])
+        self.theme_combo.setCurrentText(
+            "Light" if theme.lower() == "light" else "Dark"
+        )
+
+        form.addRow("Historic sales cutoff:", self.cutoff_edit)
+        form.addRow("Theme:", self.theme_combo)
+        layout.addLayout(form)
+
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+
+    def get_data(self) -> tuple[QDate, str]:
+        theme = self.theme_combo.currentText().lower()
+        return self.cutoff_edit.date(), theme

@@ -48,6 +48,8 @@ def upsert_target_item(
     target_quantity: int,
     craft: str,
     note: str = "",
+    sold: int = 0,
+    re_listed: int = 0,
     session: Optional[Session] = None,
 ) -> None:
     def _upsert(s: Session):
@@ -62,6 +64,8 @@ def upsert_target_item(
             existing.target_quantity = target_quantity
             existing.craft = craft
             existing.note = note
+            existing.sold = sold
+            existing.re_listed = re_listed
         else:
             s.add(
                 WantedItem(
@@ -71,6 +75,8 @@ def upsert_target_item(
                     listing_type=listing_type,
                     craft=craft,
                     note=note,
+                    sold=sold,
+                    re_listed=re_listed,
                 )
             )
 
@@ -194,16 +200,38 @@ def set_target_note(
     set_attribute(user_id, item_id, listing_type, "note", note, session)
 
 
-def set_relisted(
-    user_id: int,
-    item_id: int,
-    listing_type: str,
-    relisted: int,
-    session: Optional[Session] = None,
+def update_sold_relisted_counts(
+    user_id: int, sold_map: dict[int, int], re_list_map: dict[int, int]
 ) -> None:
-    set_attribute(
-        user_id, item_id, listing_type, "re_listed", relisted, session
-    )
+    sold_items = set(sold_map.keys())
+    re_listed_items = set(re_list_map.keys())
+    all_ids = sold_items.union(re_listed_items)
+    with SessionLocal() as s:
+        stmt = select(WantedItem).where(
+            WantedItem.user_id == user_id,
+            WantedItem.item_id.in_(all_ids),
+            WantedItem.listing_type == "sell",
+        )
+        all_items = s.scalars(stmt).all()
+        all_items_map = {item.item_id: item for item in all_items}
+        for item_id in all_ids:
+            existing = all_items_map.get(item_id)
+            if existing:
+                existing.sold += sold_map.get(item_id, 0)
+                existing.re_listed += re_list_map.get(item_id, 0)
+            else:
+                target = WantedItem(
+                    user_id=user_id,
+                    item_id=item_id,
+                    target_quantity=0,
+                    listing_type="sell",
+                    craft=get_item_craft(user_id, item_id, session=s),
+                    note="",
+                    sold=sold_map.get(item_id, 0),
+                    re_listed=re_list_map.get(item_id, 0),
+                )
+                s.add(target)
+        s.commit()
 
 
 def delete_target_item(

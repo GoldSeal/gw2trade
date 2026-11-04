@@ -1,34 +1,30 @@
-import hashlib
 import logging
 import sys
-import typing
 from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import Path
+from datetime import datetime, time
 
+import api
 import crud
 import requests
 from const import CRAFTING_DISCIPLINES
 from db import SessionLocal, run_migrations
 from delegates import CraftDelegate, SpinBoxDelegate
-from dialogs import AddUserDialog, AddWantedItemDialog
-from models import CurrentTransaction, Item, User, WantedItem
-from PyQt6.QtCore import QSettings, QSize, Qt, QUrl
+from dialogs import AddUserDialog, AddWantedItemDialog, SettingsDialog
+from models import CurrentTransaction, HistoricTransaction, Item
+from PyQt6.QtCore import QDate, QSettings, QSize, Qt
 from PyQt6.QtGui import (QAction, QCloseEvent, QColor, QFont, QIcon,
-                         QKeySequence, QPixmap, QShortcut)
-from PyQt6.QtNetwork import (QNetworkAccessManager, QNetworkReply,
-                             QNetworkRequest)
-from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog,
-                             QDialogButtonBox, QFormLayout, QHBoxLayout,
+                         QKeySequence, QPalette, QPixmap, QShortcut)
+from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QHBoxLayout,
                              QHeaderView, QInputDialog, QLabel, QLineEdit,
                              QMainWindow, QMenu, QMessageBox, QPushButton,
-                             QSpinBox, QStyledItemDelegate, QTableWidget,
-                             QTableWidgetItem, QVBoxLayout, QWidget)
-from sqlalchemy import func, select
+                             QStyleFactory, QTableWidget, QTableWidgetItem,
+                             QVBoxLayout, QWidget)
+from pyqt_logging_manager import (LogColumn, LoggingManager,
+                                  setup_exception_hook)
 
-GW2_BASE_URL = "https://api.guildwars2.com/v2"
-CACHE_DIR = Path("icon_cache")
-CACHE_DIR.mkdir(exist_ok=True)
+from icon_cache import IconCacheManager
+
 RARITY_COLORS: dict[str, QColor] = {
     "Junk": QColor("#AAAAAA"),  # Grey
     "Basic": QColor("#CCCCCC"),  # Light Grey
@@ -41,13 +37,71 @@ RARITY_COLORS: dict[str, QColor] = {
 }
 
 DEFAULT_ITEM_COLOR = QColor("#000000")
-CHECKED_BG_COLOR = QColor("#222222")
-CHECKED_TEXT_COLOR = QColor("#555a64")
-NORMAL_BG_COLOR = QColor("#1e1e1e")
-NORMAL_TEXT_COLOR = QColor("#e0e0e0")
+
+THEMES: dict[str, dict[str, str]] = {
+    "dark": {
+        "table_bg": "#1e1e1e",
+        "table_fg": "#e0e0e0",
+        "grid": "#333333",
+        "selection_bg": "#3d4450",
+        "selection_fg": "#ffffff",
+        "header_bg": "#2a2a2a",
+        "header_fg": "#e0e0e0",
+        "header_border": "#3a3a3a",
+        "checked_bg": "#222222",
+        "checked_fg": "#555a64",
+        "normal_bg": "#1e1e1e",
+        "normal_fg": "#e0e0e0",
+        "banner_bg": "#474f4d",
+        "banner_fg": "#a3b3ed",
+        "match_label": "#888888",
+        "window": "#2b2b2b",
+        "window_text": "#e0e0e0",
+        "base": "#1e1e1e",
+        "text": "#e0e0e0",
+        "button": "#3a3a3a",
+        "button_text": "#e0e0e0",
+        "highlight": "#3d4450",
+        "highlighted_text": "#ffffff",
+        "needed_fg": "#f0c000",
+    },
+    "light": {
+        "table_bg": "#ffffff",
+        "table_fg": "#1a1a1a",
+        "grid": "#d0d0d0",
+        "selection_bg": "#cde0f5",
+        "selection_fg": "#1a1a1a",
+        "header_bg": "#f0f0f0",
+        "header_fg": "#1a1a1a",
+        "header_border": "#c8c8c8",
+        "checked_bg": "#e8e8e8",
+        "checked_fg": "#888888",
+        "normal_bg": "#ffffff",
+        "normal_fg": "#1a1a1a",
+        "banner_bg": "#dce4e0",
+        "banner_fg": "#2a3f7a",
+        "match_label": "#666666",
+        "window": "#f5f5f5",
+        "window_text": "#1a1a1a",
+        "base": "#ffffff",
+        "text": "#1a1a1a",
+        "button": "#e8e8e8",
+        "button_text": "#1a1a1a",
+        "highlight": "#cde0f5",
+        "highlighted_text": "#1a1a1a",
+        "needed_fg": "#b37400",
+    },
+}
 
 
-logger = logging.getLogger(__file__)
+LOG_COLUMNS = (
+    (LogColumn.TIMESTAMP, 32),
+    (LogColumn.LEVEL, 10),
+    (LogColumn.LOGGER, 16),
+    (LogColumn.FILE, 16),
+    (LogColumn.LINE, 6),
+    (LogColumn.MESSAGE, 0),
+)
 
 
 @dataclass
@@ -58,6 +112,7 @@ class TrackerSnapshot:
     item_metadata: dict[int, Item]
     note_map: dict[tuple[int, str], str]
     re_list_map: dict[tuple[int, str], int]
+    sold_map: dict[tuple[int, str], int]
 
 
 # ============================================================================
@@ -68,6 +123,19 @@ class TrackerSnapshot:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        global logger
+        self.log_manager = LoggingManager(
+            system_name="gw2trade",
+            log_dir="logs/",
+            debug=True,
+            columns=LOG_COLUMNS,
+        )
+        logger = self.log_manager.get_logger("MAIN")
+        setup_exception_hook(
+            logger=logger,
+            show_dialog=True,
+            parent=self,
+        )
         self.setWindowTitle("GW2 Commerce & Inventory Tracker")
         self.resize(1050, 650)
 
@@ -77,20 +145,29 @@ class MainWindow(QMainWindow):
         self.search_matches: list[int] = []
         self.current_match_idx: int = -1
 
+        self.theme: str = "dark"
+        self.historic_cutoff: QDate = QDate.currentDate().addDays(-90)
+
         # Image caching and non-blocking downloader
-        self.network_manager = QNetworkAccessManager(self)
-        self.network_manager.finished.connect(self._on_image_downloaded)
-        self.image_cache: dict[str, QPixmap] = {}
-        self.pending_replies: dict[QNetworkReply, tuple[int, int, Path]] = {}
+        self.icon_cache = IconCacheManager(parent=self)
+        self.icon_cache.icon_loaded.connect(self._on_icon_loaded)
 
         self._init_menu()
         self._init_ui()
         self._restore_settings()
+        self._apply_theme()
         self._bootstrap_user()
 
     def _init_menu(self):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("&File")
+
+        settings_action = QAction("&Settings...", self)
+        settings_action.setShortcut(QKeySequence("Ctrl+,"))
+        settings_action.setStatusTip("Open application settings")
+        settings_action.triggered.connect(self.open_settings)
+        file_menu.addAction(settings_action)
+        file_menu.addSeparator()
 
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut(QKeySequence.StandardKey.Quit)  # Ctrl+Q / Cmd+Q
@@ -170,7 +247,7 @@ class MainWindow(QMainWindow):
 
         # Comparison Table
         self.tracker_table = QTableWidget()
-        self.tracker_table.setColumnCount(9)
+        self.tracker_table.setColumnCount(10)
         self.tracker_table.setHorizontalHeaderLabels(
             [
                 "Item",
@@ -179,6 +256,7 @@ class MainWindow(QMainWindow):
                 "Needed",
                 "Wanted",
                 "In Trade",
+                "Sold",
                 "Re Listed",
                 "",
                 "Note",
@@ -191,7 +269,7 @@ class MainWindow(QMainWindow):
         self.tracker_table.horizontalHeader().setSectionResizeMode(
             7, QHeaderView.ResizeMode.Interactive
         )
-        self.tracker_table.setColumnWidth(7, 40)  # check box
+        self.tracker_table.setColumnWidth(8, 40)  # check box
 
         self.tracker_table.setItemDelegateForColumn(
             1, CraftDelegate(CRAFTING_DISCIPLINES, self.tracker_table)
@@ -207,26 +285,6 @@ class MainWindow(QMainWindow):
             self._on_context_menu
         )
 
-        self.tracker_table.setStyleSheet("""
-            QTableWidget {
-                background-color: #1e1e1e;
-                color: #e0e0e0;
-                gridline-color: #333333;
-                selection-background-color: #3d4450;
-                selection-color: #ffffff;
-            }
-            QHeaderView::section {
-                background-color: #2a2a2a;
-                color: #e0e0e0;
-                border: 1px solid #3a3a3a;
-                padding: 4px;
-                font-weight: bold;
-            }
-            QTableCornerButton::section {
-                background-color: #2a2a2a;
-                border: 1px solid #3a3a3a;
-            }
-            """)
         self.tracker_table.cellChanged.connect(self.on_cell_changed)
         layout.addWidget(self.tracker_table)
 
@@ -243,17 +301,120 @@ class MainWindow(QMainWindow):
         if geometry:
             self.restoreGeometry(geometry)
 
-    def closeEvent(self, event: QCloseEvent):
+        theme = settings.value("theme", "dark")
+        if isinstance(theme, str) and theme.lower() in THEMES:
+            self.theme = theme.lower()
+
+        cutoff = settings.value("historic_cutoff")
+        if isinstance(cutoff, str) and cutoff:
+            parsed = QDate.fromString(cutoff, Qt.DateFormat.ISODate)
+            if parsed.isValid():
+                self.historic_cutoff = parsed
+
+    def _save_app_settings(self):
         settings = QSettings("GW2Trade", "TradeTracker")
 
-        # Save header sizes and window geometry
         settings.setValue(
             "tracker_table_header",
             self.tracker_table.horizontalHeader().saveState(),
         )
         settings.setValue("window_geometry", self.saveGeometry())
+        settings.setValue("theme", self.theme)
+        settings.setValue(
+            "historic_cutoff",
+            self.historic_cutoff.toString(Qt.DateFormat.ISODate),
+        )
 
+    def closeEvent(self, event: QCloseEvent):
+        self._save_app_settings()
         super().closeEvent(event)
+
+    def open_settings(self):
+        dialog = SettingsDialog(self.historic_cutoff, self.theme, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        cutoff, theme = dialog.get_data()
+        theme_changed = theme != self.theme
+        cutoff_changed = cutoff != self.historic_cutoff
+
+        self.historic_cutoff = cutoff
+        self.theme = theme
+        self._save_app_settings()
+
+        if theme_changed:
+            self._apply_theme()
+        if cutoff_changed or theme_changed:
+            self.refresh_tracker_table()
+
+    def _theme_colors(self) -> dict[str, str]:
+        return THEMES.get(self.theme, THEMES["dark"])
+
+    def _apply_theme(self):
+        colors = self._theme_colors()
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyle(QStyleFactory.create("Fusion"))
+            palette = QPalette()
+            palette.setColor(
+                QPalette.ColorRole.Window, QColor(colors["window"])
+            )
+            palette.setColor(
+                QPalette.ColorRole.WindowText, QColor(colors["window_text"])
+            )
+            palette.setColor(QPalette.ColorRole.Base, QColor(colors["base"]))
+            palette.setColor(
+                QPalette.ColorRole.AlternateBase, QColor(colors["header_bg"])
+            )
+            palette.setColor(QPalette.ColorRole.Text, QColor(colors["text"]))
+            palette.setColor(
+                QPalette.ColorRole.Button, QColor(colors["button"])
+            )
+            palette.setColor(
+                QPalette.ColorRole.ButtonText, QColor(colors["button_text"])
+            )
+            palette.setColor(
+                QPalette.ColorRole.Highlight, QColor(colors["highlight"])
+            )
+            palette.setColor(
+                QPalette.ColorRole.HighlightedText,
+                QColor(colors["highlighted_text"]),
+            )
+            palette.setColor(
+                QPalette.ColorRole.ToolTipBase, QColor(colors["base"])
+            )
+            palette.setColor(
+                QPalette.ColorRole.ToolTipText, QColor(colors["text"])
+            )
+            palette.setColor(
+                QPalette.ColorRole.PlaceholderText,
+                QColor(colors["match_label"]),
+            )
+            app.setPalette(palette)
+
+        self.match_count_label.setStyleSheet(
+            f"color: {colors['match_label']}; font-size: 11px;"
+        )
+        self.tracker_table.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {colors["table_bg"]};
+                color: {colors["table_fg"]};
+                gridline-color: {colors["grid"]};
+                selection-background-color: {colors["selection_bg"]};
+                selection-color: {colors["selection_fg"]};
+            }}
+            QHeaderView::section {{
+                background-color: {colors["header_bg"]};
+                color: {colors["header_fg"]};
+                border: 1px solid {colors["header_border"]};
+                padding: 4px;
+                font-weight: bold;
+            }}
+            QTableCornerButton::section {{
+                background-color: {colors["header_bg"]};
+                border: 1px solid {colors["header_border"]};
+            }}
+            """)
 
     # ========================================================================
     # Search & Jump Navigation
@@ -270,6 +431,11 @@ class MainWindow(QMainWindow):
             return
 
         clean_query = query.lstrip("#").removeprefix("id:").strip()
+        if not clean_query:
+            self.match_count_label.setText("")
+            self.search_input.setStyleSheet("")
+            return
+
         exact_matches = []
         partial_matches = []
 
@@ -285,11 +451,9 @@ class MainWindow(QMainWindow):
             item_id = item.data(Qt.ItemDataRole.UserRole)
             item_text = item.text().lower()
             str_item_id = str(item_id) if item_id is not None else ""
-            if clean_query and clean_query == str_item_id:
+            if clean_query == str_item_id:
                 exact_matches.append(row)
-            elif (
-                clean_query and clean_query in str_item_id
-            ) or query in item_text:
+            elif (clean_query in str_item_id) or query in item_text:
                 partial_matches.append(row)
             self.search_matches = exact_matches + partial_matches
 
@@ -426,79 +590,22 @@ class MainWindow(QMainWindow):
             return
 
         missing = list(crud.item.get_missing_item_ids(item_ids))
-
-        # Bulk request in batches of up to 200 items
-        batch_size = 200
-        for i in range(0, len(missing), batch_size):
-            batch = missing[i : i + batch_size]
-            ids_str = ",".join(str(x) for x in batch)
-            try:
-                resp = requests.get(
-                    f"{GW2_BASE_URL}/items?ids={ids_str}", timeout=10
-                )
-                if resp.status_code == 200:
-                    crud.item.create_items_from_api(resp.json())
-            except requests.RequestException:
-                pass
-
-    def _get_disk_cache_path(self, url: str) -> Path:
-        """Generates a stable local filename using MD5 hash of the URL."""
-        url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()
-        return CACHE_DIR / f"{url_hash}.png"
-
-    def _load_icon_for_item(self, row: int, col: int, icon_url: str):
-        """Asynchronously loads the item icon, using a local memory cache."""
-        if not icon_url:
+        if not missing:
             return
 
-        if icon_url in self.image_cache:
-            item_widget = self.tracker_table.item(row, col)
-            if item_widget:
-                item_widget.setIcon(QIcon(self.image_cache[icon_url]))
-            return
+        logger.info(f"about to fetch {len(missing)} items")
+        result = api.fetch_items_by_ids(missing)
+        logger.info(f"fetched {len(result)} items")
+        if result:
+            crud.item.create_items_from_api(result)
 
-        disk_path = self._get_disk_cache_path(icon_url)
-        if disk_path.exists():
-            pixmap = QPixmap(str(disk_path))
-            if not pixmap.isNull():
-                self.image_cache[icon_url] = pixmap
-                item_widget = self.tracker_table.item(row, col)
-                if item_widget:
-                    item_widget.setIcon(QIcon(pixmap))
-                return
-
-        reply = self.network_manager.get(QNetworkRequest(QUrl(icon_url)))
-        self.pending_replies[reply] = (row, col, disk_path)
-
-    def _on_image_downloaded(self, reply: QNetworkReply):
-        loc = self.pending_replies.pop(reply, None)
-        if not loc:
-            reply.deleteLater()
-            return
-
-        row, col, disk_path = loc
-
-        if reply.error() == QNetworkReply.NetworkError.NoError:
-            raw_bytes = reply.readAll().data()
-
-            # Save binary data directly to disk cache
-            try:
-                disk_path.write_bytes(raw_bytes)
-            except OSError as exc:
-                print(f"Warning: could not write disk cache {disk_path}: {exc}")
-
-            # Construct QPixmap and store in memory cache
-            pixmap = QPixmap()
-            pixmap.loadFromData(raw_bytes)
-            url_str = reply.url().toString()
-            self.image_cache[url_str] = pixmap
-
-            # Set icon on the table cell
-            item_widget = self.tracker_table.item(row, col)
-            if item_widget:
-                item_widget.setIcon(QIcon(pixmap))
-
-        reply.deleteLater()
+    def _on_icon_loaded(self, item_id: int, pixmap: QPixmap):
+        """Slot invoked whenever an icon finishes loading asynchronously."""
+        icon = QIcon(pixmap)
+        for r in range(self.tracker_table.rowCount()):
+            w = self.tracker_table.item(r, 0)
+            if w and w.data(Qt.ItemDataRole.UserRole) == item_id:
+                w.setIcon(icon)
 
     # ========================================================================
     # Transactions Sync
@@ -512,32 +619,19 @@ class MainWindow(QMainWindow):
         if not user:
             return
 
-        headers = {"Authorization": f"Bearer {user.api_key}"}
-        endpoints = {
-            "buy": f"{GW2_BASE_URL}/commerce/transactions/current/buys",
-            "sell": f"{GW2_BASE_URL}/commerce/transactions/current/sells",
-        }
-
         fetched_transactions = []
+        historic_transactions = []
+        newest = crud.transaction.get_newest_transaction(self.active_user_id)
         try:
-            for l_type, base_url in endpoints.items():
-                page = 0
-                total_pages = 1
-                while page < total_pages:
-                    resp = requests.get(
-                        base_url,
-                        headers=headers,
-                        params={"page": page, "page_size": 200},
-                        timeout=10,
-                    )
-                    resp.raise_for_status()
-                    total_pages = int(resp.headers.get("X-Page-Total", 1))
-
-                    for tx in resp.json():
-                        tx["listing_type"] = l_type
-                        fetched_transactions.append(tx)
-                    page += 1
-
+            fetched_transactions.extend(
+                api.fetch_user_sell_listing(user.api_key)
+            )
+            historic_transactions.extend(
+                api.fetch_user_historic_transactions(
+                    user.api_key,
+                    newest.__dict__ if newest else {},
+                )
+            )
         except requests.RequestException as exc:
             QMessageBox.critical(
                 self,
@@ -546,12 +640,26 @@ class MainWindow(QMainWindow):
             )
             return
 
-        crud.transaction.replace_current_transactions(
+        old_listing = crud.transaction.replace_current_transactions(
             self.active_user_id, fetched_transactions
+        )
+        crud.transaction.add_historic_transactions(
+            self.active_user_id, historic_transactions
+        )
+
+        self._update_sold_relisted_counts(
+            old_listing,
+            crud.transaction.convert2curr_trans(
+                fetched_transactions, self.active_user_id
+            ),
+            crud.transaction.convert2hist_trans(
+                historic_transactions, self.active_user_id
+            ),
         )
 
         # Pre-fetch any newly discovered items
         referenced_ids = {tx["item_id"] for tx in fetched_transactions}
+        referenced_ids.update({tx["item_id"] for tx in historic_transactions})
         self.ensure_items_cached(referenced_ids)
 
         QMessageBox.information(
@@ -561,6 +669,41 @@ class MainWindow(QMainWindow):
         )
         self.refresh_tracker_table()
 
+    def _update_sold_relisted_counts(
+        self,
+        old_listing: list[CurrentTransaction],
+        current_transactions: list[CurrentTransaction],
+        historic_transactions: list[HistoricTransaction],
+    ):
+        sold_map = defaultdict(int)
+        for historic_tx in historic_transactions:
+            sold_map[historic_tx.item_id] += historic_tx.quantity
+
+        re_listed_map = {}
+        for old_tx in old_listing:
+            found = False
+            found_tx = None
+            for new_tx in current_transactions:
+                if old_tx == new_tx:
+                    found = True
+                    break
+                if (
+                    new_tx.item_id == old_tx.item_id
+                    and new_tx.created > old_tx.created
+                ):
+                    found_tx = new_tx
+            if found:
+                continue
+            total_sold = sold_map[old_tx.item_id]
+            if total_sold >= old_tx.quantity:
+                continue
+            if found_tx and found_tx.quantity + total_sold == old_tx.quantity:
+                re_listed_map[old_tx.item_id] = found_tx.quantity
+
+        crud.wanted_item.update_sold_relisted_counts(
+            self.active_user_id, sold_map, re_listed_map
+        )
+
     # ========================================================================
     def _prompt_custom_craft(self, item_id: int, listing_type: str):
         text, ok = QInputDialog.getText(
@@ -568,7 +711,7 @@ class MainWindow(QMainWindow):
             "Custom Craft Partition",
             "Enter craft or character partition name:",
         )
-        if ok and text.strip():
+        if ok and text.strip() and self.active_user_id:
             crud.wanted_item.set_item_craft(
                 self.active_user_id, item_id, listing_type, text.strip()
             )
@@ -682,6 +825,7 @@ class MainWindow(QMainWindow):
                     re_listed=snapshot.re_list_map.get(
                         (item_id, listing_type), 0
                     ),
+                    sold=snapshot.sold_map.get((item_id, listing_type), 0),
                     item_data=snapshot.item_metadata.get(item_id),
                 )
                 current_row += 1
@@ -690,6 +834,8 @@ class MainWindow(QMainWindow):
 
     def _load_tracker_data(self) -> TrackerSnapshot:
         """Queries database for active trades, targets, and item metadata."""
+        if not self.active_user_id:
+            raise RuntimeError("user id is not set")
         in_trade_map = crud.transaction.get_in_trade_totals(self.active_user_id)
         targets = crud.wanted_item.get_wanted_items(self.active_user_id)
 
@@ -718,6 +864,10 @@ class MainWindow(QMainWindow):
             grouped_items[c].append(key)
 
         note_map = {(t.item_id, t.listing_type): t.note or "" for t in targets}
+        cutoff_dt = datetime.combine(self.historic_cutoff.toPyDate(), time.min)
+        sold_map = crud.transaction.get_sold_totals_since(
+            self.active_user_id, cutoff_dt
+        )
 
         re_list_map = {
             (t.item_id, t.listing_type): t.re_listed or 0 for t in targets
@@ -730,6 +880,7 @@ class MainWindow(QMainWindow):
             item_metadata=item_metadata,
             note_map=note_map,
             re_list_map=re_list_map,
+            sold_map=sold_map,
         )
 
     def _sync_craft_filter(
@@ -771,14 +922,15 @@ class MainWindow(QMainWindow):
     def _filter_and_sort_groups(
         self, snapshot: TrackerSnapshot, active_filter: str
     ) -> dict[str, list[tuple[int, str]]]:
-        """Applies partition filter and sorts items by needed quantity descending."""
+        """Applies partition filter and sorts items by needed/wanted quantity descending."""
 
         def sort_key(key_tuple):
             item_id, listing_type = key_tuple
             w_qty = snapshot.wanted_map.get(key_tuple, 0)
             t_qty = snapshot.in_trade_map.get(key_tuple, 0)
             diff = w_qty - t_qty
-            return (-diff, item_id, listing_type)
+            k = -(diff / w_qty) if w_qty else -diff
+            return (k, item_id, listing_type)
 
         sorted_groups: dict[str, list[tuple[int, str]]] = {}
         for craft_name, keys in snapshot.grouped_items.items():
@@ -795,9 +947,10 @@ class MainWindow(QMainWindow):
         banner_font = QFont()
         banner_font.setBold(True)
 
+        colors = self._theme_colors()
         banner_item = QTableWidgetItem(f" Craft: {craft_name} ({count} items)")
-        banner_item.setBackground(QColor("#474f4d"))
-        banner_item.setForeground(QColor("#a3b3ed"))
+        banner_item.setBackground(QColor(colors["banner_bg"]))
+        banner_item.setForeground(QColor(colors["banner_fg"]))
         banner_item.setFont(banner_font)
         banner_item.setFlags(Qt.ItemFlag.NoItemFlags)
 
@@ -814,6 +967,7 @@ class MainWindow(QMainWindow):
         in_trade_qty: int,
         note: str,
         re_listed: int,
+        sold: int,
         item_data: Item | None,
     ):
         """Renders all cells for a single item row."""
@@ -821,6 +975,7 @@ class MainWindow(QMainWindow):
         rarity = item_data.rarity if item_data else "Basic"
         icon_url = item_data.icon if item_data else None
         diff = wanted_qty - in_trade_qty
+        colors = self._theme_colors()
 
         # Col 0: Item Name & Icon
         item_widget = QTableWidgetItem(f"{item_name}  (ID: {item_id})")
@@ -830,7 +985,9 @@ class MainWindow(QMainWindow):
         self.tracker_table.setItem(row, 0, item_widget)
 
         if icon_url:
-            self._load_icon_for_item(item_id, row, icon_url)
+            cached_pixmap = self.icon_cache.load_icon(item_id, icon_url)
+            if cached_pixmap:
+                item_widget.setIcon(QIcon(cached_pixmap))
 
         # Col 1: Craft Partition
         craft_item = QTableWidgetItem(craft_name)
@@ -850,7 +1007,7 @@ class MainWindow(QMainWindow):
         diff_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         diff_item.setFlags(diff_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         if diff > 0:
-            diff_item.setForeground(Qt.GlobalColor.yellow)
+            diff_item.setForeground(QColor(colors["needed_fg"]))
         self.tracker_table.setItem(row, 3, diff_item)
 
         # Col 4: Wanted Qty (Editable)
@@ -865,14 +1022,20 @@ class MainWindow(QMainWindow):
         trade_item.setFlags(trade_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self.tracker_table.setItem(row, 5, trade_item)
 
-        # Col 6: Re Listed
+        # Col 6: Sold
+        sold_item = QTableWidgetItem(str(sold))
+        sold_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        sold_item.setFlags(sold_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.tracker_table.setItem(row, 6, sold_item)
+
+        # Col 7: Re Listed
         re_listed_item = QTableWidgetItem(str(re_listed))
         re_listed_item.setData(
             Qt.ItemDataRole.UserRole, (item_id, listing_type)
         )
-        self.tracker_table.setItem(row, 6, re_listed_item)
+        self.tracker_table.setItem(row, 7, re_listed_item)
 
-        # Col 7: Checkbox
+        # Col 8: Checkbox
         check_item = QTableWidgetItem()
         check_item.setFlags(
             Qt.ItemFlag.ItemIsUserCheckable
@@ -883,16 +1046,20 @@ class MainWindow(QMainWindow):
         check_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         check_item.setData(Qt.ItemDataRole.UserRole, (item_id, listing_type))
         check_item.setData(Qt.ItemDataRole.UserRole + 1, (rarity, diff))
-        self.tracker_table.setItem(row, 7, check_item)
+        self.tracker_table.setItem(row, 8, check_item)
 
-        # Col 8: note
+        # Col 9: note
         note_widget = QTableWidgetItem(note)
         note_widget.setData(Qt.ItemDataRole.UserRole, (item_id, listing_type))
-        self.tracker_table.setItem(row, 8, note_widget)
+        self.tracker_table.setItem(row, 9, note_widget)
 
     def on_cell_changed(self, row: int, column: int):
         if not self.active_user_id:
             logger.warning("no active user")
+            return
+
+        if column == 0:
+            self.refresh_tracker_table()
             return
 
         item = self.tracker_table.item(row, column)
@@ -911,7 +1078,7 @@ class MainWindow(QMainWindow):
             self.refresh_tracker_table()
             return
 
-        if column == 7:
+        if column == 8:
             self.on_check_toggle(item, row)
             return
 
@@ -921,12 +1088,14 @@ class MainWindow(QMainWindow):
         if column == 6:
             self.on_re_list_edited(item, item_id, listing_type)
 
-        if column == 8:
+        if column == 9:
             self.on_note_edited(item, item_id, listing_type)
 
         self.refresh_tracker_table()
 
     def on_new_wanted_quantity(self, item, item_id: int, listing_type: str):
+        if not self.active_user_id:
+            return
         try:
             new_qty = int(item.text().strip())
             if new_qty < 0:
@@ -943,12 +1112,16 @@ class MainWindow(QMainWindow):
         )
 
     def on_note_edited(self, item, item_id: int, listing_type: str):
+        if not self.active_user_id:
+            return
         new_note = item.text().strip()
         crud.wanted_item.set_target_note(
             self.active_user_id, item_id, listing_type, new_note
         )
 
     def on_re_list_edited(self, item, item_id: int, listing_type: str):
+        if not self.active_user_id:
+            return
         re_listed = int(item.text().strip())
         crud.wanted_item.set_relisted(
             self.active_user_id, item_id, listing_type, re_listed
@@ -957,8 +1130,13 @@ class MainWindow(QMainWindow):
     def on_check_toggle(self, item, row: int):
         is_checked = item.checkState() == Qt.CheckState.Checked
         rarity, diff = item.data(Qt.ItemDataRole.UserRole + 1)
-        bg_color = CHECKED_BG_COLOR if is_checked else NORMAL_BG_COLOR
-        fg_color = CHECKED_TEXT_COLOR if is_checked else NORMAL_TEXT_COLOR
+        colors = self._theme_colors()
+        bg_color = QColor(
+            colors["checked_bg"] if is_checked else colors["normal_bg"]
+        )
+        fg_color = QColor(
+            colors["checked_fg"] if is_checked else colors["normal_fg"]
+        )
         logger.info(f"row {row} toggled {is_checked}")
 
         self.tracker_table.blockSignals(True)
@@ -978,7 +1156,7 @@ class MainWindow(QMainWindow):
 
             diff_item = self.tracker_table.item(row, 3)
             if diff_item and diff > 0:
-                diff_item.setForeground(Qt.GlobalColor.yellow)
+                diff_item.setForeground(QColor(colors["needed_fg"]))
         self.tracker_table.blockSignals(False)
 
 
@@ -988,7 +1166,6 @@ class MainWindow(QMainWindow):
 
 
 def main():
-    logging.basicConfig()
     run_migrations()
     app = QApplication(sys.argv)
     window = MainWindow()

@@ -1,10 +1,12 @@
+import logging
 from typing import Any, Optional
-
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from db import SessionLocal
 from models import Item
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 
 def get_missing_item_ids(
@@ -65,3 +67,4 @@ def create_items_from_api(
     else:
         with SessionLocal() as s:
             _insert(s)
+    logger.info(f"inserted {len(raw_items)} items to db")

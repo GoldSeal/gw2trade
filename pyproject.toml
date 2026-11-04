@@ -21,6 +21,7 @@ classifiers = [
 
 dependencies = [
     "alembic>=1.20.0",
+    "pyqt-logging-manager>=1.1.1",
     "pyqt6>=6.11.0",
     "requests>=2.34.2",
     "sqlalchemy>=2.1.1",

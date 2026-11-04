@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import JSON, ForeignKey, Integer, String
+from sqlalchemy import DateTime, JSON, ForeignKey, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -72,7 +72,7 @@ class OpenTransaction(Base):
     item_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     price: Mapped[int] = mapped_column(Integer, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
-    created: Mapped[str] = mapped_column(String(50), nullable=False)
+    created: Mapped[str] = mapped_column(DateTime, nullable=False)
     listing_type: Mapped[str] = mapped_column(
         String(10), nullable=False
     )  # 'buy' or 'sell'
@@ -87,7 +87,7 @@ class CurrentTransaction(OpenTransaction):
 class HistoricTransaction(OpenTransaction):
     __tablename__ = "historic_transactions"
 
-    purchased: Mapped[str] = mapped_column(String(50), nullable=False)
+    purchased: Mapped[str] = mapped_column(DateTime, nullable=False)
 
     user: Mapped["User"] = relationship(back_populates="historic_transactions")
 
@@ -101,13 +101,14 @@ class WantedItem(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     item_id: Mapped[int] = mapped_column(Integer, nullable=False)
     target_quantity: Mapped[int] = mapped_column(Integer, default=0)
-    listing_type: Mapped[str] = mapped_column(String(10), default="buy")
+    listing_type: Mapped[str] = mapped_column(String(10), default="sell")
     craft: Mapped[str] = mapped_column(
         String(15), default="Unassigned", server_default="Unassigned"
     )
     note: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, default=""
     )
+    sold: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
     re_listed: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="wanted_items")
