@@ -263,12 +263,12 @@ class MainWindow(QMainWindow):
             ]
         )
         self.tracker_table.setIconSize(QSize(32, 32))
-        self.tracker_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Interactive
-        )
-        self.tracker_table.horizontalHeader().setSectionResizeMode(
-            7, QHeaderView.ResizeMode.Interactive
-        )
+        header = self.tracker_table.horizontalHeader()
+        header.setSectionsMovable(True)
+        header.setFirstSectionMovable(True)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Interactive)
+        header.sectionMoved.connect(self._on_column_moved)
         self.tracker_table.setColumnWidth(8, 40)  # check box
 
         self.tracker_table.setItemDelegateForColumn(
@@ -323,6 +323,14 @@ class MainWindow(QMainWindow):
         settings.setValue(
             "historic_cutoff",
             self.historic_cutoff.toString(Qt.DateFormat.ISODate),
+        )
+
+    def _on_column_moved(self, _logical: int, _old: int, _new: int):
+        """Persist column order immediately after a drag-and-drop reorder."""
+        settings = QSettings("GW2Trade", "TradeTracker")
+        settings.setValue(
+            "tracker_table_header",
+            self.tracker_table.horizontalHeader().saveState(),
         )
 
     def closeEvent(self, event: QCloseEvent):
@@ -955,7 +963,9 @@ class MainWindow(QMainWindow):
         banner_item.setFlags(Qt.ItemFlag.NoItemFlags)
 
         self.tracker_table.setItem(row, 0, banner_item)
-        self.tracker_table.setSpan(row, 0, 1, 8)
+        self.tracker_table.setSpan(
+            row, 0, 1, self.tracker_table.columnCount()
+        )
 
     def _render_item_row(
         self,
