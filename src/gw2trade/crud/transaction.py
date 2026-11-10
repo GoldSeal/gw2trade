@@ -1,3 +1,4 @@
+import logging
 from collections import defaultdict
 from datetime import datetime
 from typing import Any, Collection, Optional
@@ -7,6 +8,8 @@ from models import CurrentTransaction, HistoricTransaction
 from sqlalchemy import func, select
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 
 def get_in_trade_totals(
@@ -102,17 +105,20 @@ def add_historic_transactions(
 ) -> None:
     def _add(s: Session):
         for tx in transactions:
-            record = HistoricTransaction(
-                id=tx["id"],
-                user_id=user_id,
-                item_id=tx["item_id"],
-                price=tx["price"],
-                quantity=tx["quantity"],
-                created=datetime.fromisoformat(tx["created"]),
-                listing_type=tx["listing_type"],
-                purchased=datetime.fromisoformat(tx["purchased"]),
-            )
-            s.add(record)
+            try:
+                record = HistoricTransaction(
+                    id=tx["id"],
+                    user_id=user_id,
+                    item_id=tx["item_id"],
+                    price=tx["price"],
+                    quantity=tx["quantity"],
+                    created=datetime.fromisoformat(tx["created"]),
+                    listing_type=tx["listing_type"],
+                    purchased=datetime.fromisoformat(tx["purchased"]),
+                )
+                s.add(record)
+            except:
+                logger.error("failed to insert transaction", exc_info=True)
         s.commit()
 
     if session:
