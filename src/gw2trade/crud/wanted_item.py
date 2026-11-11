@@ -48,6 +48,7 @@ def upsert_target_item(
     target_quantity: int,
     craft: str,
     note: str = "",
+    note2: str = "",
     sold: int = 0,
     re_listed: int = 0,
     session: Optional[Session] = None,
@@ -64,6 +65,7 @@ def upsert_target_item(
             existing.target_quantity = target_quantity
             existing.craft = craft
             existing.note = note
+            existing.note2 = note2
             existing.sold = sold
             existing.re_listed = re_listed
         else:
@@ -75,6 +77,7 @@ def upsert_target_item(
                     listing_type=listing_type,
                     craft=craft,
                     note=note,
+                    note2=note2,
                     sold=sold,
                     re_listed=re_listed,
                 )
@@ -139,6 +142,7 @@ def set_attribute(
                 listing_type=listing_type,
                 craft=craft_val,
                 note="",
+                note2="",
             )
             setattr(target, attribute_name, value)
             s.add(target)
@@ -200,6 +204,16 @@ def set_target_note(
     set_attribute(user_id, item_id, listing_type, "note", note, session)
 
 
+def set_target_note2(
+    user_id: int,
+    item_id: int,
+    listing_type: str,
+    note2: str,
+    session: Optional[Session] = None,
+) -> None:
+    set_attribute(user_id, item_id, listing_type, "note2", note2, session)
+
+
 def update_sold_relisted_counts(
     user_id: int, sold_map: dict[int, int], re_list_map: dict[int, int]
 ) -> None:
@@ -227,6 +241,7 @@ def update_sold_relisted_counts(
                     listing_type="sell",
                     craft=get_item_craft(user_id, item_id, session=s),
                     note="",
+                    note2="",
                     sold=sold_map.get(item_id, 0),
                     re_listed=re_list_map.get(item_id, 0),
                 )

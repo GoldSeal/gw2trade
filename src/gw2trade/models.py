@@ -108,6 +108,9 @@ class WantedItem(Base):
     note: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, default=""
     )
+    note2: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, default=""
+    )
     sold: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
     re_listed: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
 

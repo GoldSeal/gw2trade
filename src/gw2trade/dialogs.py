@@ -81,12 +81,15 @@ class AddWantedItemDialog(QDialog):
 
         self.note_input = QLineEdit()
         self.note_input.setPlaceholderText("Optional note / character name...")
+        self.note2_input = QLineEdit()
+        self.note2_input.setPlaceholderText("Optional second note...")
 
         form.addRow("Item ID:", self.item_id_spin)
         form.addRow("Listing Type:", self.type_combo)
         form.addRow("Craft Partition:", self.craft_combo)
         form.addRow("Wanted Quantity:", self.qty_spin)
         form.addRow("Note:", self.note_input)
+        form.addRow("Note 2:", self.note2_input)
         layout.addLayout(form)
 
         # OK / Cancel buttons
@@ -98,13 +101,14 @@ class AddWantedItemDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
 
-    def get_data(self) -> tuple[int, str, int, str, str]:
+    def get_data(self) -> tuple[int, str, int, str, str, str]:
         return (
             self.item_id_spin.value(),
             self.type_combo.currentText().lower(),
             self.qty_spin.value(),
             self.craft_combo.currentText().strip() or "Unassigned",
             self.note_input.text().strip(),
+            self.note2_input.text().strip(),
         )
 
 

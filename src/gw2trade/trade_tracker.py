@@ -111,6 +111,7 @@ class TrackerSnapshot:
     grouped_items: dict[str, list[tuple[int, str]]]
     item_metadata: dict[int, Item]
     note_map: dict[tuple[int, str], str]
+    note2_map: dict[tuple[int, str], str]
     re_list_map: dict[tuple[int, str], int]
     sold_map: dict[tuple[int, str], int]
 
@@ -247,7 +248,7 @@ class MainWindow(QMainWindow):
 
         # Comparison Table
         self.tracker_table = QTableWidget()
-        self.tracker_table.setColumnCount(10)
+        self.tracker_table.setColumnCount(11)
         self.tracker_table.setHorizontalHeaderLabels(
             [
                 "Item",
@@ -260,6 +261,7 @@ class MainWindow(QMainWindow):
                 "Re Listed",
                 "",
                 "Note",
+                "Note 2",
             ]
         )
         self.tracker_table.setIconSize(QSize(32, 32))
@@ -783,7 +785,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
-        item_id, tx_type, target_qty, craft, note = dialog.get_data()
+        item_id, tx_type, target_qty, craft, note, note2 = dialog.get_data()
 
         crud.wanted_item.upsert_target_item(
             user_id=self.active_user_id,
@@ -792,6 +794,7 @@ class MainWindow(QMainWindow):
             target_quantity=target_qty,
             craft=craft,
             note=note,
+            note2=note2,
         )
 
         self.ensure_items_cached({item_id})
@@ -830,6 +833,7 @@ class MainWindow(QMainWindow):
                         (item_id, listing_type), 0
                     ),
                     note=snapshot.note_map.get((item_id, listing_type), ""),
+                    note2=snapshot.note2_map.get((item_id, listing_type), ""),
                     re_listed=snapshot.re_list_map.get(
                         (item_id, listing_type), 0
                     ),
@@ -872,6 +876,9 @@ class MainWindow(QMainWindow):
             grouped_items[c].append(key)
 
         note_map = {(t.item_id, t.listing_type): t.note or "" for t in targets}
+        note2_map = {
+            (t.item_id, t.listing_type): t.note2 or "" for t in targets
+        }
         cutoff_dt = datetime.combine(self.historic_cutoff.toPyDate(), time.min)
         sold_map = crud.transaction.get_sold_totals_since(
             self.active_user_id, cutoff_dt
@@ -887,6 +894,7 @@ class MainWindow(QMainWindow):
             grouped_items=grouped_items,
             item_metadata=item_metadata,
             note_map=note_map,
+            note2_map=note2_map,
             re_list_map=re_list_map,
             sold_map=sold_map,
         )
@@ -976,6 +984,7 @@ class MainWindow(QMainWindow):
         wanted_qty: int,
         in_trade_qty: int,
         note: str,
+        note2: str,
         re_listed: int,
         sold: int,
         item_data: Item | None,
@@ -1063,6 +1072,11 @@ class MainWindow(QMainWindow):
         note_widget.setData(Qt.ItemDataRole.UserRole, (item_id, listing_type))
         self.tracker_table.setItem(row, 9, note_widget)
 
+        # Col 10: note 2
+        note2_widget = QTableWidgetItem(note2)
+        note2_widget.setData(Qt.ItemDataRole.UserRole, (item_id, listing_type))
+        self.tracker_table.setItem(row, 10, note2_widget)
+
     def on_cell_changed(self, row: int, column: int):
         if not self.active_user_id:
             logger.warning("no active user")
@@ -1101,6 +1115,9 @@ class MainWindow(QMainWindow):
         if column == 9:
             self.on_note_edited(item, item_id, listing_type)
 
+        if column == 10:
+            self.on_note2_edited(item, item_id, listing_type)
+
         self.refresh_tracker_table()
 
     def on_new_wanted_quantity(self, item, item_id: int, listing_type: str):
@@ -1126,6 +1143,14 @@ class MainWindow(QMainWindow):
             return
         new_note = item.text().strip()
         crud.wanted_item.set_target_note(
+            self.active_user_id, item_id, listing_type, new_note
+        )
+
+    def on_note2_edited(self, item, item_id: int, listing_type: str):
+        if not self.active_user_id:
+            return
+        new_note = item.text().strip()
+        crud.wanted_item.set_target_note2(
             self.active_user_id, item_id, listing_type, new_note
         )
 
