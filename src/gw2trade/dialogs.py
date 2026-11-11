@@ -1,12 +1,18 @@
 from const import CRAFTING_DISCIPLINES
-from PyQt6.QtCore import QDate
+from PyQt6.QtCore import QDate, Qt
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QDateEdit,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
+    QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -117,11 +123,12 @@ class SettingsDialog(QDialog):
         self,
         cutoff_date: QDate,
         theme: str,
+        craft_order: list[str] | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.resize(360, 150)
+        self.resize(400, 420)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -144,6 +151,36 @@ class SettingsDialog(QDialog):
         form.addRow("Theme:", self.theme_combo)
         layout.addLayout(form)
 
+        layout.addWidget(QLabel("Section order (drag or use buttons):"))
+
+        order_row = QHBoxLayout()
+        self.craft_list = QListWidget()
+        self.craft_list.setDragDropMode(
+            QAbstractItemView.DragDropMode.InternalMove
+        )
+        self.craft_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.craft_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        for name in craft_order or list(CRAFTING_DISCIPLINES):
+            self.craft_list.addItem(QListWidgetItem(name))
+        order_row.addWidget(self.craft_list)
+
+        btn_col = QVBoxLayout()
+        self.btn_move_up = QPushButton("Move Up")
+        self.btn_move_up.clicked.connect(self._move_selected_up)
+        self.btn_move_down = QPushButton("Move Down")
+        self.btn_move_down.clicked.connect(self._move_selected_down)
+        self.btn_reset_order = QPushButton("Reset")
+        self.btn_reset_order.setToolTip("Restore default craft section order")
+        self.btn_reset_order.clicked.connect(self._reset_craft_order)
+        btn_col.addWidget(self.btn_move_up)
+        btn_col.addWidget(self.btn_move_down)
+        btn_col.addWidget(self.btn_reset_order)
+        btn_col.addStretch()
+        order_row.addLayout(btn_col)
+        layout.addLayout(order_row)
+
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
@@ -152,6 +189,39 @@ class SettingsDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
 
-    def get_data(self) -> tuple[QDate, str]:
+    def _selected_row(self) -> int:
+        item = self.craft_list.currentItem()
+        if item is None:
+            return -1
+        return self.craft_list.row(item)
+
+    def _move_selected_up(self):
+        row = self._selected_row()
+        if row <= 0:
+            return
+        item = self.craft_list.takeItem(row)
+        self.craft_list.insertItem(row - 1, item)
+        self.craft_list.setCurrentRow(row - 1)
+
+    def _move_selected_down(self):
+        row = self._selected_row()
+        if row < 0 or row >= self.craft_list.count() - 1:
+            return
+        item = self.craft_list.takeItem(row)
+        self.craft_list.insertItem(row + 1, item)
+        self.craft_list.setCurrentRow(row + 1)
+
+    def _reset_craft_order(self):
+        self.craft_list.clear()
+        for name in CRAFTING_DISCIPLINES:
+            self.craft_list.addItem(QListWidgetItem(name))
+
+    def get_craft_order(self) -> list[str]:
+        return [
+            self.craft_list.item(i).text()
+            for i in range(self.craft_list.count())
+        ]
+
+    def get_data(self) -> tuple[QDate, str, list[str]]:
         theme = self.theme_combo.currentText().lower()
-        return self.cutoff_edit.date(), theme
+        return self.cutoff_edit.date(), theme, self.get_craft_order()

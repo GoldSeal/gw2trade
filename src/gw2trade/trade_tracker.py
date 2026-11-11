@@ -148,6 +148,7 @@ class MainWindow(QMainWindow):
 
         self.theme: str = "dark"
         self.historic_cutoff: QDate = QDate.currentDate().addDays(-90)
+        self.craft_order: list[str] = list(CRAFTING_DISCIPLINES)
 
         # Image caching and non-blocking downloader
         self.icon_cache = IconCacheManager(parent=self)
@@ -313,6 +314,12 @@ class MainWindow(QMainWindow):
             if parsed.isValid():
                 self.historic_cutoff = parsed
 
+        craft_order = settings.value("craft_order")
+        if isinstance(craft_order, list) and craft_order:
+            self.craft_order = self._merge_craft_order(
+                [str(name) for name in craft_order]
+            )
+
     def _save_app_settings(self):
         settings = QSettings("GW2Trade", "TradeTracker")
 
@@ -326,6 +333,7 @@ class MainWindow(QMainWindow):
             "historic_cutoff",
             self.historic_cutoff.toString(Qt.DateFormat.ISODate),
         )
+        settings.setValue("craft_order", self.craft_order)
 
     def _on_column_moved(self, _logical: int, _old: int, _new: int):
         """Persist column order immediately after a drag-and-drop reorder."""
@@ -339,22 +347,57 @@ class MainWindow(QMainWindow):
         self._save_app_settings()
         super().closeEvent(event)
 
+    def _known_crafts(self) -> list[str]:
+        """Default disciplines plus any custom partitions in use."""
+        extras: list[str] = []
+        if self.active_user_id:
+            extras = crud.wanted_item.get_distinct_crafts(self.active_user_id)
+        return self._merge_craft_order(self.craft_order, extras)
+
+    @staticmethod
+    def _merge_craft_order(
+        preferred: list[str], extras: list[str] | None = None
+    ) -> list[str]:
+        """Preserve preferred order, then append any missing known crafts."""
+        result: list[str] = []
+        seen: set[str] = set()
+        for name in list(preferred) + list(extras or []) + list(
+            CRAFTING_DISCIPLINES
+        ):
+            if name and name not in seen:
+                result.append(name)
+                seen.add(name)
+        return result
+
+    def _craft_sort_key(self, craft_name: str) -> tuple[int, int | str]:
+        try:
+            return (0, self.craft_order.index(craft_name))
+        except ValueError:
+            return (1, craft_name.lower())
+
     def open_settings(self):
-        dialog = SettingsDialog(self.historic_cutoff, self.theme, self)
+        dialog = SettingsDialog(
+            self.historic_cutoff,
+            self.theme,
+            self._known_crafts(),
+            self,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
-        cutoff, theme = dialog.get_data()
+        cutoff, theme, craft_order = dialog.get_data()
         theme_changed = theme != self.theme
         cutoff_changed = cutoff != self.historic_cutoff
+        order_changed = craft_order != self.craft_order
 
         self.historic_cutoff = cutoff
         self.theme = theme
+        self.craft_order = craft_order
         self._save_app_settings()
 
         if theme_changed:
             self._apply_theme()
-        if cutoff_changed or theme_changed:
+        if cutoff_changed or theme_changed or order_changed:
             self.refresh_tracker_table()
 
     def _theme_colors(self) -> dict[str, str]:
@@ -904,15 +947,7 @@ class MainWindow(QMainWindow):
     ) -> str:
         """Updates the partition combo filter and returns the active selection."""
         present_crafts = sorted(
-            grouped_items.keys(),
-            key=lambda x: (
-                (
-                    CRAFTING_DISCIPLINES.index(x)
-                    if x in CRAFTING_DISCIPLINES
-                    else 99
-                ),
-                x,
-            ),
+            grouped_items.keys(), key=self._craft_sort_key
         )
 
         current_filter = self.craft_filter_combo.currentText()
@@ -949,12 +984,16 @@ class MainWindow(QMainWindow):
             return (k, item_id, listing_type)
 
         sorted_groups: dict[str, list[tuple[int, str]]] = {}
-        for craft_name, keys in snapshot.grouped_items.items():
+        for craft_name in sorted(
+            snapshot.grouped_items.keys(), key=self._craft_sort_key
+        ):
             if (
                 active_filter in ("All Crafts", "")
                 or craft_name == active_filter
             ):
-                sorted_groups[craft_name] = sorted(keys, key=sort_key)
+                sorted_groups[craft_name] = sorted(
+                    snapshot.grouped_items[craft_name], key=sort_key
+                )
 
         return sorted_groups
 
