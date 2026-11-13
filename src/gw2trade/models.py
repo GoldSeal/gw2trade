@@ -29,6 +29,9 @@ class User(Base):
     recipes: Mapped[List["Recipe"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    re_listings: Mapped[List["ReListing"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class Item(Base):
@@ -90,6 +93,12 @@ class HistoricTransaction(OpenTransaction):
     purchased: Mapped[str] = mapped_column(DateTime, nullable=False)
 
     user: Mapped["User"] = relationship(back_populates="historic_transactions")
+
+
+class ReListing(OpenTransaction):
+    __tablename__ = "re_listings"
+
+    user: Mapped["User"] = relationship(back_populates="re_listings")
 
 
 class WantedItem(Base):

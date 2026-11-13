@@ -1,4 +1,3 @@
-import logging
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -8,20 +7,48 @@ import api
 import crud
 import requests
 from const import CRAFTING_DISCIPLINES
+from crud.transaction import parse_datetime_utc
 from db import SessionLocal, run_migrations
 from delegates import CraftDelegate, SpinBoxDelegate
-from dialogs import AddUserDialog, AddWantedItemDialog, SettingsDialog
+from dialogs import (
+    AddUserDialog,
+    AddWantedItemDialog,
+    ItemHistoryDialog,
+    SettingsDialog,
+)
 from models import CurrentTransaction, HistoricTransaction, Item
 from PyQt6.QtCore import QDate, QSettings, QSize, Qt
-from PyQt6.QtGui import (QAction, QCloseEvent, QColor, QFont, QIcon,
-                         QKeySequence, QPalette, QPixmap, QShortcut)
-from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QHBoxLayout,
-                             QHeaderView, QInputDialog, QLabel, QLineEdit,
-                             QMainWindow, QMenu, QMessageBox, QPushButton,
-                             QStyleFactory, QTableWidget, QTableWidgetItem,
-                             QVBoxLayout, QWidget)
-from pyqt_logging_manager import (LogColumn, LoggingManager,
-                                  setup_exception_hook)
+from PyQt6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QColor,
+    QFont,
+    QIcon,
+    QKeySequence,
+    QPalette,
+    QPixmap,
+    QShortcut,
+)
+from PyQt6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QStyleFactory,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+from pyqt_logging_manager import LogColumn, LoggingManager, setup_exception_hook
 
 from icon_cache import IconCacheManager
 
@@ -361,8 +388,8 @@ class MainWindow(QMainWindow):
         """Preserve preferred order, then append any missing known crafts."""
         result: list[str] = []
         seen: set[str] = set()
-        for name in list(preferred) + list(extras or []) + list(
-            CRAFTING_DISCIPLINES
+        for name in (
+            list(preferred) + list(extras or []) + list(CRAFTING_DISCIPLINES)
         ):
             if name and name not in seen:
                 result.append(name)
@@ -733,16 +760,19 @@ class MainWindow(QMainWindow):
             sold_map[historic_tx.item_id] += historic_tx.quantity
 
         re_listed_map = {}
+        relisted_records: list[CurrentTransaction] = []
         for old_tx in old_listing:
             found = False
             found_tx = None
             for new_tx in current_transactions:
-                if old_tx == new_tx:
+                if old_tx.id == new_tx.id:
                     found = True
                     break
                 if (
                     new_tx.item_id == old_tx.item_id
-                    and new_tx.created > old_tx.created
+                    and new_tx.listing_type == old_tx.listing_type
+                    and parse_datetime_utc(new_tx.created)
+                    > parse_datetime_utc(old_tx.created)
                 ):
                     found_tx = new_tx
             if found:
@@ -752,6 +782,12 @@ class MainWindow(QMainWindow):
                 continue
             if found_tx and found_tx.quantity + total_sold == old_tx.quantity:
                 re_listed_map[old_tx.item_id] = found_tx.quantity
+                relisted_records.append(found_tx)
+
+        if relisted_records:
+            crud.transaction.add_re_listings(
+                self.active_user_id, relisted_records
+            )
 
         crud.wanted_item.update_sold_relisted_counts(
             self.active_user_id, sold_map, re_listed_map
@@ -785,6 +821,15 @@ class MainWindow(QMainWindow):
         item_id, listing_type = meta
 
         menu = QMenu(self)
+
+        history_action = menu.addAction("View Sold & Re-Listings...")
+        history_action.triggered.connect(
+            lambda _: self._show_sold_and_relisting_history(
+                item_id, listing_type
+            )
+        )
+        menu.addSeparator()
+
         craft_menu = menu.addMenu("Set Craft Partition")
 
         for craft in CRAFTING_DISCIPLINES:
@@ -815,6 +860,27 @@ class MainWindow(QMainWindow):
         )
 
         menu.exec(self.tracker_table.viewport().mapToGlobal(pos))
+
+    def _show_sold_and_relisting_history(self, item_id: int, listing_type: str):
+        if not self.active_user_id:
+            return
+        item_data = crud.item.get_item_by_id(item_id)
+        historic_txs = crud.transaction.get_item_historic_transactions(
+            self.active_user_id, item_id
+        )
+        relistings = crud.transaction.get_item_relistings(
+            self.active_user_id, item_id
+        )
+        dialog = ItemHistoryDialog(
+            item_id=item_id,
+            listing_type=listing_type,
+            item_data=item_data,
+            historic_txs=historic_txs,
+            relistings=relistings,
+            icon_cache=self.icon_cache,
+            parent=self,
+        )
+        dialog.exec()
 
     # ========================================================================
     # Table Rendering with Icons & Target Quantities
@@ -927,9 +993,9 @@ class MainWindow(QMainWindow):
             self.active_user_id, cutoff_dt
         )
 
-        re_list_map = {
-            (t.item_id, t.listing_type): t.re_listed or 0 for t in targets
-        }
+        re_list_map = crud.transaction.get_relisted_totals_since(
+            self.active_user_id, cutoff_dt
+        )
 
         return TrackerSnapshot(
             in_trade_map=in_trade_map,
@@ -946,9 +1012,7 @@ class MainWindow(QMainWindow):
         self, grouped_items: dict[str, list[tuple[int, str]]]
     ) -> str:
         """Updates the partition combo filter and returns the active selection."""
-        present_crafts = sorted(
-            grouped_items.keys(), key=self._craft_sort_key
-        )
+        present_crafts = sorted(grouped_items.keys(), key=self._craft_sort_key)
 
         current_filter = self.craft_filter_combo.currentText()
         self.craft_filter_combo.blockSignals(True)
@@ -1010,9 +1074,7 @@ class MainWindow(QMainWindow):
         banner_item.setFlags(Qt.ItemFlag.NoItemFlags)
 
         self.tracker_table.setItem(row, 0, banner_item)
-        self.tracker_table.setSpan(
-            row, 0, 1, self.tracker_table.columnCount()
-        )
+        self.tracker_table.setSpan(row, 0, 1, self.tracker_table.columnCount())
 
     def _render_item_row(
         self,
@@ -1088,6 +1150,10 @@ class MainWindow(QMainWindow):
 
         # Col 7: Re Listed
         re_listed_item = QTableWidgetItem(str(re_listed))
+        re_listed_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        re_listed_item.setFlags(
+            re_listed_item.flags() & ~Qt.ItemFlag.ItemIsEditable
+        )
         re_listed_item.setData(
             Qt.ItemDataRole.UserRole, (item_id, listing_type)
         )

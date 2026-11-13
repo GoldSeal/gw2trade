@@ -1,5 +1,10 @@
-from const import CRAFTING_DISCIPLINES
+from datetime import datetime
+from typing import Any
+
+from const import CRAFTING_DISCIPLINES, format_coins
+from models import HistoricTransaction, Item, ReListing
 from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -8,12 +13,15 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -225,3 +233,169 @@ class SettingsDialog(QDialog):
     def get_data(self) -> tuple[QDate, str, list[str]]:
         theme = self.theme_combo.currentText().lower()
         return self.cutoff_edit.date(), theme, self.get_craft_order()
+
+
+class ItemHistoryDialog(QDialog):
+    def __init__(
+        self,
+        item_id: int,
+        listing_type: str,
+        item_data: Item | None,
+        historic_txs: list[HistoricTransaction],
+        relistings: list[ReListing],
+        icon_cache=None,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        item_name = item_data.name if item_data else f"Item #{item_id}"
+        self.setWindowTitle(f"History: {item_name} (ID: {item_id})")
+        self.resize(750, 480)
+
+        layout = QVBoxLayout(self)
+
+        # Header info
+        header_layout = QHBoxLayout()
+        if item_data and item_data.icon and icon_cache:
+            pixmap = icon_cache.load_icon(item_id, item_data.icon)
+            if pixmap:
+                icon_lbl = QLabel()
+                icon_lbl.setPixmap(
+                    pixmap.scaled(
+                        36,
+                        36,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+                header_layout.addWidget(icon_lbl)
+
+        info_lbl = QLabel(
+            f"<b>{item_name}</b> (ID: {item_id}) &mdash; Type: <b>{listing_type.upper()}</b>"
+        )
+        header_layout.addWidget(info_lbl)
+        header_layout.addStretch()
+
+        sold_total = sum(tx.quantity for tx in historic_txs)
+        relist_total = sum(r.quantity for r in relistings)
+        summary_lbl = QLabel(
+            f"Total Sold: <b>{sold_total}</b> | Total Re-Listed: <b>{relist_total}</b>"
+        )
+        header_layout.addWidget(summary_lbl)
+        layout.addLayout(header_layout)
+
+        # Merge and sort events chronologically descending
+        events = []
+        for h in historic_txs:
+            dt = self._parse_dt(h.purchased)
+            events.append(
+                {
+                    "type": "Sold",
+                    "datetime": dt,
+                    "quantity": h.quantity,
+                    "price": h.price,
+                    "listing_type": h.listing_type,
+                }
+            )
+        for r in relistings:
+            dt = self._parse_dt(r.created)
+            events.append(
+                {
+                    "type": "Re-Listing",
+                    "datetime": dt,
+                    "quantity": r.quantity,
+                    "price": r.price,
+                    "listing_type": r.listing_type,
+                }
+            )
+
+        events.sort(key=lambda e: e["datetime"], reverse=True)
+
+        # Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(
+            [
+                "Action",
+                "Date / Time",
+                "Quantity",
+                "Unit Price",
+                "Total Amount",
+            ]
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self.table.setRowCount(len(events))
+
+        for row, ev in enumerate(events):
+            # Action
+            act_item = QTableWidgetItem(ev["type"])
+            act_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            act_item.setFlags(act_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if ev["type"] == "Sold":
+                act_item.setForeground(QColor("#4caf50"))
+            else:
+                act_item.setForeground(QColor("#2196f3"))
+            self.table.setItem(row, 0, act_item)
+
+            # Date / Time
+            dt_str = (
+                ev["datetime"].strftime("%Y-%m-%d %H:%M:%S")
+                if ev["datetime"] != datetime.min
+                else "—"
+            )
+            dt_item = QTableWidgetItem(dt_str)
+            dt_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            dt_item.setFlags(dt_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(row, 1, dt_item)
+
+            # Quantity
+            qty_item = QTableWidgetItem(str(ev["quantity"]))
+            qty_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            qty_item.setFlags(qty_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(row, 2, qty_item)
+
+            # Unit Price
+            price_item = QTableWidgetItem(format_coins(ev["price"]))
+            price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight)
+            price_item.setFlags(
+                price_item.flags() & ~Qt.ItemFlag.ItemIsEditable
+            )
+            self.table.setItem(row, 3, price_item)
+
+            # Total Amount
+            total_item = QTableWidgetItem(
+                format_coins(ev["price"] * ev["quantity"])
+            )
+            total_item.setTextAlignment(Qt.AlignmentFlag.AlignRight)
+            total_item.setFlags(
+                total_item.flags() & ~Qt.ItemFlag.ItemIsEditable
+            )
+            self.table.setItem(row, 4, total_item)
+
+        layout.addWidget(self.table)
+
+        # Close button
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+    @staticmethod
+    def _parse_dt(val: Any) -> datetime:
+        if isinstance(val, datetime):
+            return val
+        if isinstance(val, str):
+            try:
+                return datetime.fromisoformat(val)
+            except ValueError:
+                pass
+            for fmt in (
+                "%Y-%m-%d %H:%M:%S.%f",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d",
+            ):
+                try:
+                    return datetime.strptime(val, fmt)
+                except ValueError:
+                    pass
+        return datetime.min

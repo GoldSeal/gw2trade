@@ -64,6 +64,11 @@ def fetch_from_endpoint(url: str, headers: dict, fence_item: dict = {}) -> list:
     result = []
     page = 0
     total_pages = 1
+    fence_id = (
+        fence_item.get("id", None)
+        if isinstance(fence_item, dict)
+        else getattr(fence_item, "id", None)
+    )
     while page < total_pages:
         resp = requests.get(
             url,
@@ -75,6 +80,8 @@ def fetch_from_endpoint(url: str, headers: dict, fence_item: dict = {}) -> list:
         total_pages = int(resp.headers.get("X-Page-Total", 1))
 
         for item in resp.json():
+            if fence_id and item.get("id") == fence_id:
+                return result
             if fence_item and item == fence_item:
                 return result
             result.append(item)

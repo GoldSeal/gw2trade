@@ -43,6 +43,15 @@ def get_items_by_ids(
         return {item.id: item for item in items}
 
 
+def get_item_by_id(
+    item_id: int, session: Optional[Session] = None
+) -> Optional[Item]:
+    if session:
+        return session.get(Item, item_id)
+    with SessionLocal() as s:
+        return s.get(Item, item_id)
+
+
 def create_items_from_api(
     raw_items: list[dict[str, Any]], session: Optional[Session] = None
 ) -> None:
