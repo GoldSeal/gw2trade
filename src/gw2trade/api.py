@@ -131,4 +131,3 @@ def fetch_all_item_ids() -> list[int]:
     resp = requests.get(f"{GW2_BASE_URL}/items", timeout=15)
     resp.raise_for_status()
     return resp.json()
-

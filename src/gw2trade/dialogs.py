@@ -1,13 +1,16 @@
+import re
 from datetime import datetime
 from typing import Any
 
+import crud
 from const import CRAFTING_DISCIPLINES, format_coins
 from models import HistoricTransaction, Item, ReListing
-from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtCore import QDate, QStringListModel, Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QCompleter,
     QDateEdit,
     QDialog,
     QDialogButtonBox,
@@ -18,6 +21,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -56,6 +60,9 @@ class AddUserDialog(QDialog):
         return self.name_input.text().strip(), self.api_key_input.text().strip()
 
 
+COMPLETION_ID_RE = re.compile(r"^(?P<name>.*?)\s*\(ID:\s*(?P<id>\d+)\)\s*$")
+
+
 class AddWantedItemDialog(QDialog):
     def __init__(
         self,
@@ -64,15 +71,38 @@ class AddWantedItemDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Add Wanted Item")
-        self.resize(320, 160)
+        self.resize(380, 220)
+
+        # Pre-warm in-memory item name cache
+        crud.item.load_item_cache()
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        # Item ID (GW2 IDs can reach up to ~150,000+)
+        # Item Name input with in-memory search-as-you-type completer
+        self.item_name_input = QLineEdit()
+        self.item_name_input.setPlaceholderText(
+            "Type item name or numeric ID..."
+        )
+        self._completer_model = QStringListModel(self)
+        self._item_completer = QCompleter(self._completer_model, self)
+        self._item_completer.setCaseSensitivity(
+            Qt.CaseSensitivity.CaseInsensitive
+        )
+        self._item_completer.setCompletionMode(
+            QCompleter.CompletionMode.UnfilteredPopupCompletion
+        )
+        self._item_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._item_completer.setMaxVisibleItems(15)
+        self.item_name_input.setCompleter(self._item_completer)
+        self.item_name_input.textChanged.connect(self._on_item_name_changed)
+        self._item_completer.activated.connect(self._on_completer_activated)
+
+        # Item ID spinbox (synced with item name)
         self.item_id_spin = QSpinBox()
-        self.item_id_spin.setRange(1, 999_999)
-        # self.item_id_spin.setValue(1)
+        self.item_id_spin.setRange(0, 999_999)
+        self.item_id_spin.setValue(0)
+        self.item_id_spin.valueChanged.connect(self._on_item_id_changed)
 
         # Listing Type dropdown
         self.type_combo = QComboBox()
@@ -98,6 +128,7 @@ class AddWantedItemDialog(QDialog):
         self.note2_input = QLineEdit()
         self.note2_input.setPlaceholderText("Optional second note...")
 
+        form.addRow("Item Name:", self.item_name_input)
         form.addRow("Item ID:", self.item_id_spin)
         form.addRow("Listing Type:", self.type_combo)
         form.addRow("Craft Partition:", self.craft_combo)
@@ -114,6 +145,89 @@ class AddWantedItemDialog(QDialog):
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
+
+    def _on_item_name_changed(self, text: str):
+        query = text.strip()
+        match = COMPLETION_ID_RE.match(query)
+        if match:
+            item_id = int(match.group("id"))
+            self.item_id_spin.blockSignals(True)
+            self.item_id_spin.setValue(item_id)
+            self.item_id_spin.blockSignals(False)
+            return
+
+        if query.isdigit():
+            item_id = int(query)
+            self.item_id_spin.blockSignals(True)
+            self.item_id_spin.setValue(item_id)
+            self.item_id_spin.blockSignals(False)
+            return
+
+        # Check if the query matches the currently selected item or an exact item name
+        current_name = crud.item.get_item_name(self.item_id_spin.value())
+        if current_name and current_name.lower() == query.lower():
+            pass
+        else:
+            exact_id = crud.item.get_item_id_by_name(query) if query else None
+            self.item_id_spin.blockSignals(True)
+            self.item_id_spin.setValue(exact_id or 0)
+            self.item_id_spin.blockSignals(False)
+
+        if len(query) < 2:
+            self._completer_model.setStringList([])
+            return
+
+        matches = crud.item.search_items_by_name(query, limit=30)
+        labels = [f"{name}  (ID: {iid})" for iid, name in matches]
+        self._completer_model.setStringList(labels)
+        if labels:
+            self._item_completer.complete()
+
+    def _on_completer_activated(self, text: str):
+        match = COMPLETION_ID_RE.match(text)
+        if match:
+            item_id = int(match.group("id"))
+            name = match.group("name").strip()
+            self.item_id_spin.blockSignals(True)
+            self.item_id_spin.setValue(item_id)
+            self.item_id_spin.blockSignals(False)
+            self.item_name_input.blockSignals(True)
+            self.item_name_input.setText(name)
+            self.item_name_input.blockSignals(False)
+
+    def _on_item_id_changed(self, item_id: int):
+        if item_id <= 0:
+            self.item_name_input.blockSignals(True)
+            self.item_name_input.setText("")
+            self.item_name_input.blockSignals(False)
+            return
+        name = crud.item.get_item_name(item_id)
+        self.item_name_input.blockSignals(True)
+        self.item_name_input.setText(name if name else "")
+        self.item_name_input.blockSignals(False)
+
+    def accept(self):
+        if self.item_id_spin.value() <= 0:
+            text = self.item_name_input.text().strip()
+            match = COMPLETION_ID_RE.match(text)
+            if match:
+                self.item_id_spin.setValue(int(match.group("id")))
+            elif text.isdigit():
+                self.item_id_spin.setValue(int(text))
+            elif text:
+                resolved_id = crud.item.get_item_id_by_name(text)
+                if resolved_id:
+                    self.item_id_spin.setValue(resolved_id)
+
+        if self.item_id_spin.value() <= 0:
+            QMessageBox.warning(
+                self,
+                "Invalid Item",
+                "Please select an item from the suggestions or enter a valid item ID.",
+            )
+            return
+
+        super().accept()
 
     def get_data(self) -> tuple[int, str, int, str, str, str]:
         return (

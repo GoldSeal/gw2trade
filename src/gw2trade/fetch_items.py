@@ -235,7 +235,9 @@ def main():
             limit=args.limit,
         )
     except KeyboardInterrupt:
-        print("\nOperation cancelled by user. Progress up to last batch was saved.")
+        print(
+            "\nOperation cancelled by user. Progress up to last batch was saved."
+        )
         sys.exit(130)
 
 
