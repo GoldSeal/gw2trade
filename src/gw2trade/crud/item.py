@@ -43,6 +43,15 @@ def get_items_by_ids(
         return {item.id: item for item in items}
 
 
+def get_all_item_ids(session: Optional[Session] = None) -> set[int]:
+    """Get all item IDs currently stored in the database."""
+    stmt = select(Item.id)
+    if session:
+        return set(session.scalars(stmt).all())
+    with SessionLocal() as s:
+        return set(s.scalars(stmt).all())
+
+
 def get_item_by_id(
     item_id: int, session: Optional[Session] = None
 ) -> Optional[Item]:
@@ -54,8 +63,9 @@ def get_item_by_id(
 
 def create_items_from_api(
     raw_items: list[dict[str, Any]], session: Optional[Session] = None
-) -> None:
-    def _insert(s: Session):
+) -> int:
+    def _insert(s: Session) -> int:
+        count = 0
         for raw in raw_items:
             item = Item(
                 id=raw["id"],
@@ -67,13 +77,23 @@ def create_items_from_api(
                 rarity=raw.get("rarity", "Basic"),
                 level=raw.get("level", 0),
                 vendor_value=raw.get("vendor_value", 0),
+                default_skin=raw.get("default_skin"),
+                flags=raw.get("flags", []),
+                game_types=raw.get("game_types", []),
+                restrictions=raw.get("restrictions", []),
+                upgrade_into=raw.get("upgrade_into"),
+                upgrades_from=raw.get("upgrades_from"),
+                details=raw.get("details"),
             )
             s.add(item)
+            count += 1
         s.commit()
+        return count
 
     if session:
-        _insert(session)
+        inserted = _insert(session)
     else:
         with SessionLocal() as s:
-            _insert(s)
-    logger.info(f"inserted {len(raw_items)} items to db")
+            inserted = _insert(s)
+    logger.debug(f"inserted {inserted} items to db")
+    return inserted

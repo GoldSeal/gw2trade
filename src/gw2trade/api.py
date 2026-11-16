@@ -124,3 +124,11 @@ def fetch_with_ids(
             result.append(item)
         logger.debug(f"got {len(result)} objects")
     return result
+
+
+def fetch_all_item_ids() -> list[int]:
+    """Fetch all available item IDs from the GW2 API (/v2/items)."""
+    resp = requests.get(f"{GW2_BASE_URL}/items", timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
