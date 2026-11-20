@@ -232,7 +232,10 @@ def update_sold_relisted_counts(
             existing = all_items_map.get(item_id)
             if existing:
                 existing.sold += sold_map.get(item_id, 0)
-                existing.re_listed += re_list_map.get(item_id, 0)
+                if not existing.re_listed:
+                    existing.re_le = re_list_map.get(item_id, 0)
+                else:
+                    existing.re_listed += re_list_map.get(item_id, 0)
             else:
                 target = WantedItem(
                     user_id=user_id,
